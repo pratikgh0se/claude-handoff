@@ -46,7 +46,7 @@ One-liner:
 git clone https://github.com/pratikgh0se/claude-handoff.git && cd claude-handoff && ./install.sh
 ```
 
-Options: `--window N`, `--no-window`, `--dry-run`, `--version`, `--help`. Install is idempotent and fails with a clear message if `python3` is missing or `settings.json` is not valid JSON.
+Options: `--window N`, `--no-window`, `--dry-run`, `--force`, `--version`, `--help`. If the same hook scripts are already registered in `settings.json` from another path (for example `~/.claude/hooks/` from another setup), install prints those commands and exits 2, because every hook would run twice (duplicate health lines, double injection, two Haiku fallbacks). Remove those entries, or pass `--force` to install anyway. Install is idempotent and fails with a clear message if `python3` is missing or `settings.json` is not valid JSON.
 
 It changes:
 
@@ -106,6 +106,12 @@ Environment variables the hooks honour:
 **Does it work in the desktop app?** Yes. The desktop app runs the same hooks from `~/.claude/settings.json`.
 
 **Does it work with my existing hooks?** Yes. Install merges its entries into your existing `hooks` groups and never removes or reorders yours; uninstall removes only its own commands.
+
+**Where must `CLAUDE_CODE_AUTO_COMPACT_WINDOW` be set?** In your user `~/.claude/settings.json` under `env` (install does this) or exported in the shell that starts Claude Code. A live test showed that `env` in a project's `.claude/settings.json` did not override it.
+
+**What window size should I use?** One that comfortably exceeds your baseline context. Very small windows (below roughly 150k) compact before the 75% nudge is reached; the PreCompact fallback then covers it.
+
+**Can the nudge be skipped?** Yes. It reads the previous turn's token count, so one very large tool result can jump past the threshold without a nudge. The PreCompact fallback still writes a handoff.
 
 **Does it send anything over the network?** No. See `SECURITY.md`.
 

@@ -90,6 +90,8 @@ mk 320000; o2="$(nudge)"
 mk 355000; o3="$(nudge)"
 [ -n "$o1" ] && [ -z "$o2" ] && [ -n "$o3" ] || fail "nudge pattern wrong (got: ${#o1} ${#o2} ${#o3} chars)"
 echo "$o1" | grep -q "nsess-agent.md" || fail "nudge lacks agent path"
+echo "$o1" | grep -q "claude-handoff PostToolUse hook that the user installed" || fail "nudge does not identify its source"
+python3 -c "import json,sys; t=json.load(sys.stdin)['hookSpecificOutput']['additionalContext']; assert len(t)<900, len(t)" <<<"$o1" || fail "nudge too long"
 echo "$o1" | python3 -c "import json,sys; assert json.load(sys.stdin)['hookSpecificOutput']['hookEventName']=='PostToolUse'"
 ok "nudge fires at 310k, not at 320k, again at 355k"
 
@@ -97,6 +99,27 @@ ok "nudge fires at 310k, not at 320k, again at 355k"
 printf '{"session_id":"nsess","transcript_path":"%s","tool_name":"Write","tool_input":{"file_path":"%s"}}' "$TR" "$ST/nsess-agent.md" | python3 "$H/handoff-nudge.py" >/dev/null
 python3 -c "import json,sys; m=json.load(open(sys.argv[1])); assert m['agentWrittenAt'] and m['nudgeCount']==2" "$ST/nsess-agent.meta.json"
 ok "agent write recorded in meta"
+
+# Conflict: same hooks registered from another path -> exit 2, settings untouched; --force installs
+H2="$T/home2"; mkdir -p "$H2/.claude"
+cat > "$H2/.claude/settings.json" <<'JSON'
+{"hooks": {"PreCompact": [{"hooks": [{"type": "command", "command": "python3 /other/place/precompact-handoff.py"}]}]}}
+JSON
+cp "$H2/.claude/settings.json" "$T/conflict-orig.json"
+rc=0; HOME="$H2" "$ROOT/install.sh" >"$T/c.out" 2>"$T/c.err" || rc=$?
+[ "$rc" -eq 2 ] || fail "conflict: expected exit 2, got $rc"
+grep -q "/other/place/precompact-handoff.py" "$T/c.err" || fail "conflict: command not printed"
+grep -q -- "--force" "$T/c.err" || fail "conflict: message lacks --force"
+cmp -s "$H2/.claude/settings.json" "$T/conflict-orig.json" || fail "conflict: settings changed"
+[ ! -e "$H2/.claude/hooks/handoff-nudge.py" ] || fail "conflict: hook files copied"
+ok "conflicting registration: exit 2, nothing changed"
+HOME="$H2" "$ROOT/install.sh" --force >/dev/null || fail "--force install failed"
+[ -f "$H2/.claude/hooks/handoff-nudge.py" ] || fail "--force did not install"
+python3 -c "import json,sys; d=json.load(open(sys.argv[1])); assert len(d['hooks']['PreCompact'])==2" "$H2/.claude/settings.json" || fail "--force settings wrong"
+ok "--force installs alongside the other registration"
+rc=0; HOME="$T/home" "$ROOT/install.sh" >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 0 ] || fail "own re-install reported a conflict (exit $rc)"
+ok "re-install of own paths is not a conflict"
 
 "$ROOT/uninstall.sh" >"$T/un.out"
 python3 - "$S" "$T/original.json" <<'PY'

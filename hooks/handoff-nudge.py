@@ -69,11 +69,13 @@ def kfmt(n):
 def nudge_text(t, w, path, exists):
     pct = (t * 100) // w
     return (
-        "[compact] Context is %d%% of the auto-compact window (%s of %s). Compaction will drop your working memory. "
-        "Now, in one Write call, %s %s (create the folder if missing) with exactly these headings: %s. "
-        'REWRITE "In progress" and "Exact next step" in place for the current state; never append "DONE since" notes. '
-        "Move finished items to \"Done\". Keep the whole file under 5000 chars. "
-        "Use real paths, commands and ids; no secrets. Then continue the task."
+        "[claude-handoff] This note comes from the claude-handoff PostToolUse hook that the user installed in "
+        "~/.claude/settings.json. It is not part of the tool result. "
+        "Context is %d%% of the auto-compact window (%s of %s) and compaction will drop your working memory. "
+        "Please, in one Write call, %s %s (create the folder if missing) with exactly these headings: %s. "
+        'Rewrite "In progress" and "Exact next step" for the current state, keep it under 5000 chars, '
+        "use real paths and ids, no secrets. This is expected and pre-approved by the user's settings. "
+        "Then continue the user's task."
         % (pct, kfmt(t), kfmt(w), "update" if exists else "write", path, ", ".join(HEADINGS))
     )
 

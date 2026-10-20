@@ -8,12 +8,14 @@ usage() {
 claude-handoff $VERSION
 Copies three hooks into ~/.claude/hooks and merges them into ~/.claude/settings.json.
 
-Usage: ./install.sh [--dry-run] [--window N] [--no-window] [--version] [-h|--help]
+Usage: ./install.sh [--dry-run] [--force] [--window N] [--no-window] [--version] [-h|--help]
 
   --dry-run     show what would change, change nothing
   --window N    set CLAUDE_CODE_AUTO_COMPACT_WINDOW to N tokens (default 400000;
                 left alone if already set)
   --no-window   do not touch CLAUDE_CODE_AUTO_COMPACT_WINDOW
+  --force       install even if the same hooks are already registered from another
+                path (they would then run twice); default is to stop with exit 2
   --version     print the version and exit
   -h, --help    show this help
 
@@ -21,12 +23,13 @@ Requires bash and python3 (macOS or Linux).
 EOF
 }
 
-DRY=0; WINDOW=400000; SETWINDOW=1
+DRY=0; FORCE=0; WINDOW=400000; SETWINDOW=1
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run) DRY=1 ;;
     --window) shift; WINDOW="${1:-}"; case "$WINDOW" in ''|*[!0-9]*) echo "--window needs a number" >&2; exit 2 ;; esac ;;
     --no-window) SETWINDOW=0 ;;
+    --force) FORCE=1 ;;
     --version) echo "claude-handoff $VERSION"; exit 0 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
@@ -45,27 +48,8 @@ FILES="precompact-handoff.py postcompact-inject.py handoff-nudge.py"
 
 say() { if [ "$DRY" = 1 ]; then echo "[dry-run] $*"; else echo "$*"; fi; }
 
-# 1. hook files
-for f in $FILES; do
-  target="$HOOKS_DIR/$f"
-  if [ -f "$target" ] && cmp -s "$SRC/hooks/$f" "$target"; then
-    say "hook unchanged: $target"; continue
-  fi
-  if [ -e "$target" ]; then say "back up existing $target -> $BACKUP/$f"; fi
-  say "install hook: $target"
-  if [ "$DRY" = 0 ]; then
-    mkdir -p "$HOOKS_DIR"
-    if [ -e "$target" ]; then mkdir -p "$BACKUP"; cp -p "$target" "$BACKUP/$f"; fi
-    cp "$SRC/hooks/$f" "$target"; chmod 755 "$target"
-  fi
-done
-
-# 2. state dir
-if [ -d "$STATE_DIR" ]; then say "state dir exists: $STATE_DIR"; else
-  say "create state dir: $STATE_DIR"; [ "$DRY" = 1 ] || mkdir -p "$STATE_DIR"; fi
-
 # 3. settings merge
-HC_DRY="$DRY" HC_WINDOW="$WINDOW" HC_SETWINDOW="$SETWINDOW" HC_SETTINGS="$SETTINGS" \
+HC_DRY="$DRY" HC_FORCE="$FORCE" HC_WINDOW="$WINDOW" HC_SETWINDOW="$SETWINDOW" HC_SETTINGS="$SETTINGS" \
 HC_HOOKS="$HOOKS_DIR" HC_TS="$TS" python3 - <<'PY'
 import json, os, shutil, sys
 dry = os.environ["HC_DRY"] == "1"
@@ -97,6 +81,29 @@ changes = []
 hooks = data.setdefault("hooks", {})
 if not isinstance(hooks, dict):
     sys.exit("settings.json: hooks is not an object")
+
+# conflict check: the same hook scripts registered from a different path would run twice
+own_cmds = set([pre, nudge] + post)
+names = ("precompact-handoff.py", "postcompact-inject.py", "handoff-nudge.py")
+conflicts = []
+for ev, groups_ in hooks.items():
+    if not isinstance(groups_, list):
+        continue
+    for g in groups_:
+        if not isinstance(g, dict) or not isinstance(g.get("hooks"), list):
+            continue
+        for h in g["hooks"]:
+            c = h.get("command") if isinstance(h, dict) else None
+            if isinstance(c, str) and any(n in c for n in names) and c not in own_cmds:
+                conflicts.append((ev, c))
+if conflicts and os.environ["HC_FORCE"] != "1":
+    sys.stderr.write("claude-handoff hooks are already registered from another path; installing would run every hook twice:\n")
+    for ev, c in conflicts:
+        sys.stderr.write("  %s: %s\n" % (ev, c))
+    sys.stderr.write("Already installed from another path (not %s): remove those entries from %s, or rerun with --force.\n" % (hooks_dir, path))
+    sys.exit(2)
+if conflicts:
+    print("%sWARNING: --force given; %d conflicting hook entr%s left in place, hooks will run twice" % (tag, len(conflicts), "y" if len(conflicts) == 1 else "ies"))
 
 def has_cmd(groups, cmd):
     return any(isinstance(g, dict) and any(isinstance(h, dict) and h.get("command") == cmd
@@ -196,6 +203,25 @@ os.makedirs(hooks_dir, exist_ok=True)
 with open(marker_path, "w", encoding="utf-8") as f:
     json.dump(marker, f)
 PY
+
+# hook files and state dir (after the settings merge, so a conflict exit 2 changes nothing)
+for f in $FILES; do
+  target="$HOOKS_DIR/$f"
+  if [ -f "$target" ] && cmp -s "$SRC/hooks/$f" "$target"; then
+    say "hook unchanged: $target"; continue
+  fi
+  if [ -e "$target" ]; then say "back up existing $target -> $BACKUP/$f"; fi
+  say "install hook: $target"
+  if [ "$DRY" = 0 ]; then
+    mkdir -p "$HOOKS_DIR"
+    if [ -e "$target" ]; then mkdir -p "$BACKUP"; cp -p "$target" "$BACKUP/$f"; fi
+    cp "$SRC/hooks/$f" "$target"; chmod 755 "$target"
+  fi
+done
+
+# 2. state dir
+if [ -d "$STATE_DIR" ]; then say "state dir exists: $STATE_DIR"; else
+  say "create state dir: $STATE_DIR"; [ "$DRY" = 1 ] || mkdir -p "$STATE_DIR"; fi
 
 echo
 if [ "$DRY" = 1 ]; then echo "Dry run only: nothing was changed."; else
