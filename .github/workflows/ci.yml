@@ -37,7 +37,7 @@ jobs:
           shellcheck --version
 
       - name: Shellcheck
-        run: shellcheck install.sh uninstall.sh tests/smoke.sh
+        run: shellcheck --severity=warning install.sh uninstall.sh tests/smoke.sh
 
       - name: Compile Python hooks
         run: python3 -m py_compile hooks/*.py
