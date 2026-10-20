@@ -1,7 +1,25 @@
 #!/usr/bin/env bash
 # claude-handoff installer: copies three hooks and merges them into ~/.claude/settings.json.
-# Usage: ./install.sh [--dry-run] [--window N] [--no-window]
 set -euo pipefail
+
+VERSION="0.1.0"
+usage() {
+  cat <<EOF
+claude-handoff $VERSION
+Copies three hooks into ~/.claude/hooks and merges them into ~/.claude/settings.json.
+
+Usage: ./install.sh [--dry-run] [--window N] [--no-window] [--version] [-h|--help]
+
+  --dry-run     show what would change, change nothing
+  --window N    set CLAUDE_CODE_AUTO_COMPACT_WINDOW to N tokens (default 400000;
+                left alone if already set)
+  --no-window   do not touch CLAUDE_CODE_AUTO_COMPACT_WINDOW
+  --version     print the version and exit
+  -h, --help    show this help
+
+Requires bash and python3 (macOS or Linux).
+EOF
+}
 
 DRY=0; WINDOW=400000; SETWINDOW=1
 while [ $# -gt 0 ]; do
@@ -9,7 +27,8 @@ while [ $# -gt 0 ]; do
     --dry-run) DRY=1 ;;
     --window) shift; WINDOW="${1:-}"; case "$WINDOW" in ''|*[!0-9]*) echo "--window needs a number" >&2; exit 2 ;; esac ;;
     --no-window) SETWINDOW=0 ;;
-    -h|--help) sed -n '2,3p' "$0"; exit 0 ;;
+    --version) echo "claude-handoff $VERSION"; exit 0 ;;
+    -h|--help) usage; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
   shift

@@ -1,5 +1,7 @@
 # claude-handoff
 
+[![CI](https://github.com/pratikgh0se/claude-handoff/actions/workflows/ci.yml/badge.svg)](https://github.com/pratikgh0se/claude-handoff/actions/workflows/ci.yml)
+
 Auto-compaction plus a handoff for Claude Code. Extracted from [Bento (machine-setup)](https://github.com/pratikgh0se/machine-setup) v1.0.0. Three small hooks, no dependencies beyond Python 3, one command to install and one to remove.
 
 ## The problem
@@ -20,17 +22,31 @@ Long Claude Code sessions lose context when they compact. The summary Claude Cod
 
 What works without the model's cooperation: if the model never writes the agent file, you still get the Haiku summary plus the facts section (spec section 4 and F35.B; status `reduced`). If Haiku is disabled or fails too, you get the facts section only, and the injected text starts with a `HANDOFF DEGRADED` warning line (spec F36.D). The Haiku fallback needs the `claude` binary on `PATH`.
 
-Why a 400k window: the default window is 1M tokens, so sessions rarely compact and pay for their whole context on every turn. A shorter window lowers per-turn cost and avoids the quality loss of very long contexts. The price is more compactions, which the handoff makes safe. See [ADR 0001](https://github.com/pratikgh0se/machine-setup/blob/main/docs/adr/0001-compact-window-400k-with-handoff.md). Use `--window N` to pick another value (Claude Code ignores values below 40000) or `--no-window` to keep the default.
+Why a 400k window: the default window is 1M tokens, so sessions rarely compact and pay for their whole context on every turn. A shorter window lowers per-turn cost and avoids the quality loss of very long contexts. The price is more compactions, which the handoff makes safe. See [ADR 0001](https://github.com/pratikgh0se/machine-setup/blob/main/docs/adr/0001-compact-window-400k-with-handoff.md). Use `--window N` to pick another value or `--no-window` to leave the setting alone.
+
+## Prerequisites
+
+- A Claude Code version that supports the `PreCompact` and `SessionStart` hook events, `PostToolUse` hooks, and `additionalContext` in hook output. Recent releases do; if a hook never fires, update Claude Code first.
+- `python3` (standard library only, no packages to install).
+- `bash`, on macOS or Linux. Windows is not supported.
+- Optional: the `claude` binary on `PATH`, used only for the Haiku fallback summary.
 
 ## Install
 
 ```
-git clone <this repo> claude-handoff && cd claude-handoff
-./install.sh --dry-run   # show the plan
+git clone https://github.com/pratikgh0se/claude-handoff.git
+cd claude-handoff
+./install.sh --dry-run   # show the plan, change nothing
 ./install.sh
 ```
 
-Requires bash, python3, and macOS or Linux. Options: `--window N`, `--no-window`, `--dry-run`. It is idempotent.
+One-liner:
+
+```
+git clone https://github.com/pratikgh0se/claude-handoff.git && cd claude-handoff && ./install.sh
+```
+
+Options: `--window N`, `--no-window`, `--dry-run`, `--version`, `--help`. Install is idempotent and fails with a clear message if `python3` is missing or `settings.json` is not valid JSON.
 
 It changes:
 
@@ -38,7 +54,7 @@ It changes:
 - merges into `~/.claude/settings.json` (backup `settings.json.bak-<timestamp>`): a PreCompact hook (timeout 90), a PostToolUse hook (matcher `*`, timeout 5), a SessionStart `compact` group with the three inject commands (timeout 10), `permissions.allow` entry `Edit(~/.local/state/claude-handoffs/**)` so the model can write its handoff without a prompt, and `env.CLAUDE_CODE_AUTO_COMPACT_WINDOW` = `"400000"` unless already set;
 - creates `~/.local/state/claude-handoffs/`.
 
-Your other hooks and settings are left alone. Restart Claude Code afterwards.
+Your other hooks and settings are left alone: new entries are appended next to existing ones. Restart Claude Code afterwards.
 
 ## Uninstall
 
@@ -83,6 +99,25 @@ Environment variables the hooks honour:
 | `HANDOFF_STATE_DIR` | Use another directory instead of `~/.local/state/claude-handoffs`. |
 | `HANDOFF_HOOK_CHILD` | Set by the hook for its own Haiku call so it never recurses. Do not set it yourself. |
 
+## FAQ
+
+**Does it cost tokens?** About one short note per nudge (once at 75% of the window, then every 50,000 tokens), plus up to about 20,000 characters injected once per compaction. If the model never writes its own handoff, the Haiku fallback adds one short Haiku call per compaction. Set `HANDOFF_HAIKU_FALLBACK=0` to avoid it.
+
+**Does it work in the desktop app?** Yes. The desktop app runs the same hooks from `~/.claude/settings.json`.
+
+**Does it work with my existing hooks?** Yes. Install merges its entries into your existing `hooks` groups and never removes or reorders yours; uninstall removes only its own commands.
+
+**Does it send anything over the network?** No. See `SECURITY.md`.
+
+## Troubleshooting
+
+- Logs and health live in `~/.local/state/claude-handoffs/` (or `$HANDOFF_STATE_DIR`). Start with `tail -n 5 ~/.local/state/claude-handoffs/health.jsonl`: one line per compaction with `status` `ok`, `reduced` or `degraded`.
+- `<sid>-degraded.json` and `<sid>-last-health.json` in the same folder say why a compaction was degraded.
+- No health line after `/compact`: restart Claude Code (hooks load at startup), then check `~/.claude/settings.json` has the `PreCompact` entry and that `python3 ~/.claude/hooks/precompact-handoff.py` exists.
+- No nudge appears: it only fires above 75% of the window and needs the transcript to contain a usage entry; check `CLAUDE_CODE_AUTO_COMPACT_WINDOW` in `settings.json`.
+- Settings or hooks got into a bad state: install and uninstall leave timestamped backups (`settings.json.bak-*`, `~/.claude/hooks/.claude-handoff-backup-*`).
+- Something else: run `bash tests/smoke.sh`, then open an issue using the bug report template.
+
 ## Limitations
 
 - The nudge only works if the model obeys it. If it does not, you get the Haiku fallback, which is lossier.
@@ -99,4 +134,4 @@ Environment variables the hooks honour:
 - Decisions: [ADR 0007](https://github.com/pratikgh0se/machine-setup/blob/main/docs/adr/0007-handoff-degraded-vs-reduced.md) (degraded vs reduced), [ADR 0011](https://github.com/pratikgh0se/machine-setup/blob/main/docs/adr/0011-handoff-nudge-bounded-channel.md) (the nudge).
 - The Bento `compact` plugin offers the same nudge plus a status chip and `/handoff` command for the desktop app's plugin UI. You do not need it; this repo's `handoff-nudge.py` replaces it for the CLI. Do not run both nudges.
 
-MIT license. See `LICENSE`.
+MIT license. See `LICENSE`. Security notes: `SECURITY.md`. Changes: `CHANGELOG.md`.

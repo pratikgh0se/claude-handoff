@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Syntax check shell scripts
+        run: |
+          for f in install.sh uninstall.sh tests/smoke.sh; do
+            bash -n "$f"
+          done
+
+      - name: Install shellcheck if missing
+        run: |
+          if ! command -v shellcheck >/dev/null; then
+            if [ "$RUNNER_OS" = "macOS" ]; then
+              brew install shellcheck
+            else
+              sudo apt-get update && sudo apt-get install -y shellcheck
+            fi
+          fi
+          shellcheck --version
+
+      - name: Shellcheck
+        run: shellcheck install.sh uninstall.sh tests/smoke.sh
+
+      - name: Compile Python hooks
+        run: python3 -m py_compile hooks/*.py
+
+      - name: Smoke test
+        run: bash tests/smoke.sh
