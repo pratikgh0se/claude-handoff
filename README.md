@@ -24,6 +24,15 @@ What works without the model's cooperation: if the model never writes the agent 
 
 Why a 400k window: the default window is 1M tokens, so sessions rarely compact and pay for their whole context on every turn. A shorter window lowers per-turn cost and avoids the quality loss of very long contexts. The price is more compactions, which the handoff makes safe. See [ADR 0001](https://github.com/pratikgh0se/machine-setup/blob/main/docs/adr/0001-compact-window-400k-with-handoff.md). Use `--window N` to pick another value or `--no-window` to leave the setting alone.
 
+## What to expect
+
+Measured on the author's machine over the first 4.7 days with the 400k window (2026-10-15 to 10-20; Opus and Sonnet with a 1M context window, heavy multi-hour sessions):
+
+- **About 20% lower cost.** Average context per turn fell from about 474k (estimated, without the cap) to 223k. That is about 25% fewer tokens processed and about 19% lower API-equivalent cost (roughly $230/week here), after subtracting the cost of the extra compactions. On a subscription this shows up as usage-limit headroom rather than cash.
+- **Continuity across many compactions.** 13 of 13 real compactions had a fresh model-written handoff, with no degraded cases. One working session went through 9 compactions in two days and kept going on the same task, each time resuming from its own "Exact next step".
+
+Your numbers will differ. Savings come from long sessions on 1M-context models; if your sessions rarely pass 300k tokens, the window never triggers and you mainly get the handoff. The figures come from a small sample (one user, four sessions, one of which accounts for most of the saving) and a counterfactual model, and they are API-equivalent estimates rather than a bill. Whether shorter context also improves answer quality was not measured.
+
 ## Prerequisites
 
 - A Claude Code version that supports the `PreCompact` and `SessionStart` hook events, `PostToolUse` hooks, and `additionalContext` in hook output. Recent releases do; if a hook never fires, update Claude Code first.
