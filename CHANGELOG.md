@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.2.0] - 2026-10-23
+
+- `precompact-handoff.py` 1.3.0 (machine-setup F38): a fresh Sonnet summary of the conversation since the last compaction is written at every compaction (`claude -p --model sonnet`, isolated flags), placed after the model's own handoff. It replaces the Haiku fallback.
+- New switches: `HANDOFF_SUMMARY=0` disables it, `HANDOFF_SUMMARY_MODEL` (default `sonnet`), `HANDOFF_SUMMARY_TIMEOUT` (seconds, default 75). `HANDOFF_HAIKU_FALLBACK=0` still disables it.
+- Health lines gain `summary_model`; the section is headed `## Fresh summary at compaction (<model>; verify against facts)` and failures read `Fresh summary failed: <reason>`.
+- `tests/smoke.sh`: cases with a fake `claude` shim (summary placement, disable switch, model override, timeout).
+- README: blind-test quality numbers, configuration table, cost FAQ; SECURITY.md describes the per-compaction call.
+- `install.sh` reports version 0.2.0; nothing else in install/uninstall changes.
+
 ## 0.1.0 - 2026-10-20
 
 Extracted from machine-setup v1.0.0 (the Bento handoff system, spec features F35 to F37).

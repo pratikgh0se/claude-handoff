@@ -2,7 +2,7 @@
 # claude-handoff installer: copies three hooks and merges them into ~/.claude/settings.json.
 set -euo pipefail
 
-VERSION="0.1.0"
+VERSION="0.2.0"
 usage() {
   cat <<EOF
 claude-handoff $VERSION

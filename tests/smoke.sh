@@ -67,6 +67,54 @@ grep -q "Please refactor the parser" "$ST/smoke1-latest.md" || fail "user messag
 python3 -c "import json,sys; json.loads(open(sys.argv[1]).readline())" "$ST/health.jsonl" || fail "bad health line"
 ok "PreCompact wrote handoff and health line"
 
+# F38: fresh summary via a fake `claude` shim on PATH
+SH="$T/shim"; mkdir -p "$SH"
+cat > "$SH/claude" <<'SHIM'
+#!/usr/bin/env bash
+printf '%s\n' "$@" > "$SHIM_LOG"
+cat > /dev/null
+[ -n "${SHIM_SLEEP:-}" ] && sleep "$SHIM_SLEEP"
+printf 'SHIM-SUMMARY %.0s' 1 2 3 4 5 6
+exit 0
+SHIM
+chmod +x "$SH/claude"
+run_pre() { # $1 = session id; rest = env assignments
+  local sid="$1"; shift
+  printf '{"session_id":"%s","cwd":"%s","transcript_path":"%s","trigger":"manual"}' "$sid" "$T" "$TR" \
+    | env -u HANDOFF_HAIKU_FALLBACK PATH="$SH:$PATH" SHIM_LOG="$T/shim.log" "$@" python3 "$H/precompact-handoff.py" >/dev/null 2>&1
+}
+python3 -c "print('## Goal\nrefactor\n' + 'x' * 400)" > "$ST/sumsess-agent.md"
+rm -f "$T/shim.log"
+run_pre sumsess
+F="$ST/sumsess-latest.md"
+grep -q "^## Fresh summary at compaction (sonnet; verify against facts)" "$F" || fail "summary heading missing"
+grep -q "SHIM-SUMMARY" "$F" || fail "summary text missing"
+a="$(grep -n '^## Agent handoff' "$F" | head -1 | cut -d: -f1)"; b="$(grep -n '^## Fresh summary' "$F" | head -1 | cut -d: -f1)"
+[ -n "$a" ] && [ -n "$b" ] && [ "$a" -lt "$b" ] || fail "summary not after agent section"
+grep -qx -- "--model" "$T/shim.log" && grep -qx "sonnet" "$T/shim.log" || fail "shim not called with --model sonnet"
+tail -n 1 "$ST/health.jsonl" | grep -q '"summary_model": *"sonnet"' || fail "health lacks summary_model sonnet"
+! grep -q "Haiku fallback" "$F" || fail "old Haiku wording emitted"
+ok "F38 summary present after agent section (sonnet)"
+
+rm -f "$T/shim.log"
+run_pre sumsess HANDOFF_SUMMARY=0
+[ ! -e "$T/shim.log" ] || fail "HANDOFF_SUMMARY=0 still ran claude"
+! grep -q "Fresh summary" "$F" || fail "HANDOFF_SUMMARY=0 left a summary section"
+tail -n 1 "$ST/health.jsonl" | grep -q '"fallback": *"disabled"' || fail "health fallback not disabled"
+ok "HANDOFF_SUMMARY=0 disables it"
+
+run_pre sumsess HANDOFF_SUMMARY_MODEL=haiku
+grep -q "^## Fresh summary at compaction (haiku; verify against facts)" "$F" || fail "haiku heading missing"
+grep -qx "haiku" "$T/shim.log" || fail "shim not called with haiku"
+ok "HANDOFF_SUMMARY_MODEL=haiku is used"
+
+s0=$SECONDS
+run_pre sumsess HANDOFF_SUMMARY_TIMEOUT=2 SHIM_SLEEP=10
+[ $((SECONDS - s0)) -le 7 ] || fail "timeout took too long"
+grep -q "^Fresh summary failed: timeout after 2s" "$F" || fail "timeout line missing"
+ok "HANDOFF_SUMMARY_TIMEOUT=2 gives 'timeout after 2s' quickly"
+rm -f "$ST"/sumsess-*
+
 # Inject
 printf '{"session_id":"smoke1"}' | python3 "$H/postcompact-inject.py" --part 1 >"$T/inj.out"
 python3 - "$T/inj.out" <<'PY'

@@ -12,7 +12,7 @@ The hooks read the session transcript Claude Code passes them and write handoff 
 
 ## Network
 
-None of the scripts or hooks open network connections. The one exception to "no model call" is the optional Haiku fallback, which runs your local `claude -p --model haiku` at compaction; that is Claude Code talking to Anthropic as usual, not this project. Disable it with `HANDOFF_HAIKU_FALLBACK=0`.
+None of the scripts or hooks open network connections. The one exception to "no model call" is the fresh summary, which runs your local `claude -p --model sonnet` once per compaction; that is Claude Code talking to Anthropic as usual, not this project. The call uses isolated flags (no settings, no MCP servers, no slash commands, no tools) and runs in a temporary directory with the conversation excerpt on stdin. Disable it with `HANDOFF_SUMMARY=0` (the legacy `HANDOFF_HAIKU_FALLBACK=0` also works).
 
 Handoff files contain excerpts of your conversation (your recent messages, file names, git status, recent commands). Keep `~/.local/state/claude-handoffs/` private and do not commit or share it. Files older than 14 days are removed automatically.
 
