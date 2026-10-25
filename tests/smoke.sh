@@ -17,7 +17,8 @@ cat > "$S" <<'JSON'
   "note": "café ☃",
   "env": {"FOO": "1"},
   "permissions": {"allow": ["Bash(ls:*)"]},
-  "hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "echo hi"}]}]}
+  "hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "echo hi"}]}],
+            "SessionStart": [{"matcher": "startup", "hooks": [{"type": "command", "command": "echo hello"}]}]}
 }
 JSON
 cp "$S" "$T/original.json"
@@ -40,11 +41,16 @@ assert d["env"]["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] == "400000" and d["env"]["FOO
 assert d["note"] == "café ☃"
 assert d["hooks"]["PreToolUse"][0]["hooks"][0]["command"] == "echo hi"
 assert [x["command"] for x in d["hooks"]["PreCompact"][0]["hooks"]] == ["python3 %s/precompact-handoff.py" % h]
-ss = d["hooks"]["SessionStart"]; assert len(ss) == 1 and ss[0]["matcher"] == "compact" and len(ss[0]["hooks"]) == 3
+ss = {g["matcher"]: [x["command"] for x in g["hooks"]] for g in d["hooks"]["SessionStart"]}
+assert sorted(ss) == ["compact", "resume", "startup"], ss
+pi = "python3 %s/postcompact-inject.py" % h
+assert ss["compact"] == [pi + " --part 1", pi + " --part 2", pi + " --part 3", pi + " --ledger --part 1", pi + " --ledger --part 2"], ss
+assert ss["startup"] == ["echo hello", pi + " --ledger"] and ss["resume"] == [pi + " --ledger"], ss
+assert all(x["timeout"] == 10 for g in d["hooks"]["SessionStart"] for x in g["hooks"] if "inject" in x["command"])
 assert d["hooks"]["PostToolUse"][0]["hooks"][0]["timeout"] == 5
 assert "Edit(~/.local/state/claude-handoffs/**)" in d["permissions"]["allow"]
 PY
-ok "settings content"
+ok "settings content (compact, startup and resume ledger commands)"
 
 # PreCompact hook on a tiny transcript
 TR="$T/t.jsonl"
@@ -59,18 +65,31 @@ rows = [
 open(sys.argv[1], "w").write("\n".join(json.dumps(r) for r in rows) + "\n")
 PY
 printf '{"session_id":"smoke1","cwd":"%s","transcript_path":"%s","trigger":"manual"}' "$T" "$TR" \
-  | python3 "$H/precompact-handoff.py" >"$T/pre.out" 2>"$T/pre.err"
+  | HANDOFF_LEDGER=0 python3 "$H/precompact-handoff.py" >"$T/pre.out" 2>"$T/pre.err"
 [ ! -s "$T/pre.out" ] && [ ! -s "$T/pre.err" ] || fail "precompact printed output"
 [ -s "$ST/smoke1-latest.md" ] || fail "no latest handoff"
 grep -q "Please refactor the parser" "$ST/smoke1-latest.md" || fail "user message missing from handoff"
 [ "$(wc -l < "$ST/health.jsonl")" -eq 1 ] || fail "expected one health line"
 python3 -c "import json,sys; json.loads(open(sys.argv[1]).readline())" "$ST/health.jsonl" || fail "bad health line"
-ok "PreCompact wrote handoff and health line"
+grep -q "^- authority: the user's latest words > Project decisions > Agent handoff" "$ST/smoke1-latest.md" || fail "authority line missing"
+! grep -q "^## Decisions via questions" "$ST/smoke1-latest.md" || fail "old '## Decisions via questions' section present"
+[ "$(wc -c < "$ST/smoke1-latest.md")" -le 14000 ] || fail "handoff over the 14,000 char cap"
+ok "PreCompact wrote handoff and health line (authority line, cap 14,000)"
 
 # F38: fresh summary via a fake `claude` shim on PATH
 SH="$T/shim"; mkdir -p "$SH"
 cat > "$SH/claude" <<'SHIM'
 #!/usr/bin/env bash
+# Tells the ledger merge call from the summary call by its --system-prompt.
+sys=""; prev=""
+for a in "$@"; do [ "$prev" = "--system-prompt" ] && sys="$a"; prev="$a"; done
+case "$sys" in
+  *"decisions ledger"*)
+    printf '%s\n' "$@" > "$SHIM_LOG.merge"
+    cat > "$SHIM_LOG.merge.stdin"
+    [ -n "${SHIM_MERGE_OUT:-}" ] && cat "$SHIM_MERGE_OUT"
+    exit 0 ;;
+esac
 printf '%s\n' "$@" > "$SHIM_LOG"
 cat > /dev/null
 [ -n "${SHIM_SLEEP:-}" ] && sleep "$SHIM_SLEEP"
@@ -99,7 +118,7 @@ ok "F38 summary present after agent section (sonnet)"
 rm -f "$T/shim.log"
 run_pre sumsess HANDOFF_SUMMARY=0
 [ ! -e "$T/shim.log" ] || fail "HANDOFF_SUMMARY=0 still ran claude"
-! grep -q "Fresh summary" "$F" || fail "HANDOFF_SUMMARY=0 left a summary section"
+! grep -q "^## Fresh summary" "$F" || fail "HANDOFF_SUMMARY=0 left a summary section"
 tail -n 1 "$ST/health.jsonl" | grep -q '"fallback": *"disabled"' || fail "health fallback not disabled"
 ok "HANDOFF_SUMMARY=0 disables it"
 
@@ -114,6 +133,110 @@ run_pre sumsess HANDOFF_SUMMARY_TIMEOUT=2 SHIM_SLEEP=10
 grep -q "^Fresh summary failed: timeout after 2s" "$F" || fail "timeout line missing"
 ok "HANDOFF_SUMMARY_TIMEOUT=2 gives 'timeout after 2s' quickly"
 rm -f "$ST"/sumsess-*
+
+# F39: per-project decisions ledger
+# $PR is a plain folder (no git needed); the ledger key comes from the folder when it is not a repo.
+PR="$T/proj"; mkdir -p "$PR"
+TR2="$T/t2.jsonl"
+python3 - "$TR2" <<'PY'
+import json, sys
+rows = [{"type": "user", "timestamp": "2026-10-20T10:00:00.000Z", "message": {"content": "Decision: use tabs for indentation, spaces are rejected"}},
+        {"type": "assistant", "timestamp": "2026-10-20T10:00:05.000Z", "message": {"content": [{"type": "text", "text": "Understood."}]}}]
+open(sys.argv[1], "w").write("\n".join(json.dumps(r) for r in rows) + "\n")
+PY
+M1="$T/merge1.txt"; M2="$T/merge2.txt"
+cat > "$M1" <<'TXT'
+# Project decisions
+- D1 [2026-10-20] Use tabs for indentation | why: team style
+- D2 [2026-10-20] Never push to main without review | why: release rule
+TXT
+cat > "$M2" <<'TXT'
+- D2 [2026-10-20] SUPERSEDED by D3 [2026-10-21]: Never push to main without review | because: replaced
+- D3 [2026-10-21] Push to main only after CI passes | why: new release rule
+TXT
+run_led() {
+  local sid="$1" cwd="$2" tr="$3" mo="$4"; shift 4
+  printf '{"session_id":"%s","cwd":"%s","transcript_path":"%s","trigger":"auto"}' "$sid" "$cwd" "$tr" \
+    | env -u HANDOFF_HAIKU_FALLBACK PATH="$SH:$PATH" SHIM_LOG="$T/shim.log" SHIM_MERGE_OUT="$mo" "$@" python3 "$H/precompact-handoff.py" >/dev/null 2>&1
+}
+ledger_file() { ls "$ST"/projects/*/decisions.md 2>/dev/null | head -1; }
+run_led led1 "$PR" "$TR2" "$M1"
+LF="$(ledger_file)"
+[ -n "$LF" ] || fail "ledger not created under projects/<key>/decisions.md"
+case "$LF" in "$ST"/projects/proj-*/decisions.md) ;; *) fail "unexpected ledger path $LF" ;; esac
+grep -q "^- D1 \[2026-10-20\] Use tabs" "$LF" && grep -q "^- D2 " "$LF" || fail "ledger lacks D1/D2"
+grep -q "decisions ledger" "$T/shim.log.merge" || fail "merge call lacks the ledger system prompt"
+grep -q "Decision: use tabs" "$T/shim.log.merge.stdin" || fail "merge stdin lacks the conversation"
+tail -n 1 "$ST/health.jsonl" | grep -q '"ledger": *"ok"' || fail "health lacks ledger ok"
+[ -s "$T/shim.log" ] && grep -q "SHIM-SUMMARY" "$ST/led1-latest.md" || fail "summary call did not run alongside the merge"
+ok "ledger created for a project folder; merge and summary calls told apart"
+
+# second compaction: model drops D1 (restored), supersedes D2, adds D3
+python3 - "$TR2" <<'PY'
+import json, sys
+r = {"type": "user", "timestamp": "2026-10-21T09:00:00.000Z", "message": {"content": "Decision: push to main only after CI passes"}}
+open(sys.argv[1], "a").write(json.dumps(r) + "\n")
+PY
+run_led led1 "$PR" "$TR2" "$M2"
+grep -q "^- D1 \[2026-10-20\] Use tabs" "$LF" || fail "dropped D1 was not restored"
+grep -q "^- D2 \[2026-10-20\] SUPERSEDED by D3" "$LF" || fail "D2 not marked superseded"
+grep -q "^- D3 " "$LF" || fail "D3 not added"
+tail -n 1 "$ST/health.jsonl" | grep -q '"ledger_restored": *1' || fail "health lacks ledger_restored 1"
+ls "$(dirname "$LF")"/decisions.[0-9]*T*Z.md >/dev/null 2>&1 || fail "no backup of the previous ledger"
+ok "second compaction keeps old ids (dropped entry restored, none deleted)"
+
+# inject: compact parts and startup/resume
+inj() { printf '{"cwd":"%s"}' "$PR" | python3 "$H/postcompact-inject.py" --ledger; }
+inj_ctx() { python3 -c "import json,sys; print(json.load(sys.stdin)['hookSpecificOutput']['additionalContext'])"; }
+o="$(inj | inj_ctx)"
+echo "$o" | grep -q "D1 " && echo "$o" | grep -q "D3 " || fail "plain --ledger lacks entries"
+! echo "$o" | grep -q "D2 " || fail "plain --ledger shows a superseded entry"
+o="$(printf '{"cwd":"%s"}' "$PR" | python3 "$H/postcompact-inject.py" --ledger --part 1 | inj_ctx)"
+echo "$o" | grep -q "part 1 of the ledger" && echo "$o" | grep -q "D3 " || fail "--ledger --part 1 lacks entries"
+[ -z "$(printf '{"cwd":"%s"}' "$PR" | python3 "$H/postcompact-inject.py" --ledger --part 2)" ] || fail "--ledger --part 2 should be empty for a short ledger"
+# a big ledger spills into part 2 and plain mode is cut to 4,000 chars
+PB="$T/bigproj"; mkdir -p "$PB"
+printf '{"session_id":"big","cwd":"%s","transcript_path":"%s","trigger":"auto"}' "$PB" "$TR2" \
+  | env PATH="$SH:$PATH" SHIM_LOG="$T/shim.log" SHIM_MERGE_OUT="$M1" python3 "$H/precompact-handoff.py" >/dev/null 2>&1
+BF="$(ls -d "$ST"/projects/bigproj-* | head -1)/decisions.md"; [ -f "$BF" ] || fail "big project ledger missing"
+python3 - "$BF" <<'PY'
+import sys
+with open(sys.argv[1], "w") as f:
+    f.write("# Project decisions\n")
+    for i in range(1, 41):
+        f.write("- D%d [2026-10-20] %s | why: %s\n" % (i, "d" * 300, "w" * 250))
+PY
+p1="$(printf '{"cwd":"%s"}' "$PB" | python3 "$H/postcompact-inject.py" --ledger --part 1 | inj_ctx)"
+p2="$(printf '{"cwd":"%s"}' "$PB" | python3 "$H/postcompact-inject.py" --ledger --part 2 | inj_ctx)"
+pl="$(printf '{"cwd":"%s"}' "$PB" | python3 "$H/postcompact-inject.py" --ledger | inj_ctx)"
+[ "${#p1}" -lt 10000 ] && [ "${#p2}" -lt 10000 ] || fail "ledger part over 10,000 chars"
+echo "$p1" | grep -q "D40 " && echo "$p2" | grep -q "part 2 of the ledger" && echo "$p2" | grep -q "older active decisions in the full ledger" || fail "part 2 content wrong"
+[ "${#pl}" -lt 4600 ] && echo "$pl" | grep -q "older active decisions in the full ledger)" || fail "plain --ledger not cut to about 4,000 chars"
+ok "--ledger --part 1/2 and plain --ledger print the entries"
+
+# git: the ledger is keyed on the repo root, so a subfolder reaches the same file
+if command -v git >/dev/null 2>&1; then
+  GR="$T/gitrepo"; mkdir -p "$GR/sub"; git -C "$GR" init -q
+  run_led led2 "$GR/sub" "$TR2" "$M1"
+  ls -d "$ST"/projects/gitrepo-* >/dev/null 2>&1 || fail "git repo ledger not keyed on the repo root"
+  [ "$(ls -d "$ST"/projects/gitrepo-* | wc -l)" -eq 1 ] || fail "more than one ledger for one repo"
+  o="$(printf '{"cwd":"%s"}' "$GR" | python3 "$H/postcompact-inject.py" --ledger | inj_ctx)"
+  echo "$o" | grep -q "D1 " || fail "repo root and subfolder do not share the ledger"
+  ok "git repo: ledger keyed on the repo root"
+else
+  echo "SKIP: git not installed, git-specific ledger check skipped"
+fi
+
+# HANDOFF_LEDGER=0 turns everything off
+PO="$T/offproj"; mkdir -p "$PO"
+run_led led3 "$PO" "$TR2" "$M1" HANDOFF_LEDGER=0
+ls -d "$ST"/projects/offproj-* >/dev/null 2>&1 && fail "HANDOFF_LEDGER=0 still wrote a ledger"
+tail -n 1 "$ST/health.jsonl" | grep -q '"ledger": *"disabled"' || fail "health ledger not disabled"
+for args in "--ledger" "--ledger --part 1" "--ledger --part 2"; do
+  # shellcheck disable=SC2086
+  [ -z "$(printf '{"cwd":"%s"}' "$PR" | HANDOFF_LEDGER=0 python3 "$H/postcompact-inject.py" $args)" ] || fail "HANDOFF_LEDGER=0: inject $args printed output"
+done
+ok "HANDOFF_LEDGER=0 disables the ledger (no file, no injection)"
 
 # Inject
 printf '{"session_id":"smoke1"}' | python3 "$H/postcompact-inject.py" --part 1 >"$T/inj.out"

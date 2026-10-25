@@ -2,7 +2,7 @@
 # claude-handoff installer: copies three hooks and merges them into ~/.claude/settings.json.
 set -euo pipefail
 
-VERSION="0.2.0"
+VERSION="0.3.0"
 usage() {
   cat <<EOF
 claude-handoff $VERSION
@@ -59,6 +59,8 @@ ts = os.environ["HC_TS"]
 pre = "python3 %s/precompact-handoff.py" % hooks_dir
 nudge = "python3 %s/handoff-nudge.py" % hooks_dir
 post = ["python3 %s/postcompact-inject.py --part %d" % (hooks_dir, n) for n in (1, 2, 3)]
+post_led = ["python3 %s/postcompact-inject.py --ledger --part %d" % (hooks_dir, n) for n in (1, 2)]
+start_led = "python3 %s/postcompact-inject.py --ledger" % hooks_dir
 allow_rule = "Edit(~/.local/state/claude-handoffs/**)"
 marker_path = os.path.join(hooks_dir, ".claude-handoff-install.json")
 tag = "[dry-run] " if dry else ""
@@ -83,7 +85,7 @@ if not isinstance(hooks, dict):
     sys.exit("settings.json: hooks is not an object")
 
 # conflict check: the same hook scripts registered from a different path would run twice
-own_cmds = set([pre, nudge] + post)
+own_cmds = set([pre, nudge, start_led] + post + post_led)
 names = ("precompact-handoff.py", "postcompact-inject.py", "handoff-nudge.py")
 conflicts = []
 for ev, groups_ in hooks.items():
@@ -135,6 +137,25 @@ for n, cmd in enumerate(post, 1):
     else:
         grp["hooks"].append({"type": "command", "command": cmd, "timeout": 10})
         changes.append("add SessionStart compact --part %d (timeout 10)" % n)
+
+for n, cmd in enumerate(post_led, 1):
+    if any(isinstance(h, dict) and h.get("command") == cmd for h in grp["hooks"]):
+        changes.append("SessionStart compact --ledger --part %d already present" % n)
+    else:
+        grp["hooks"].append({"type": "command", "command": cmd, "timeout": 10})
+        changes.append("add SessionStart compact --ledger --part %d (timeout 10)" % n)
+
+for matcher in ("startup", "resume"):
+    g2 = next((g for g in groups if isinstance(g, dict) and g.get("matcher") == matcher
+               and isinstance(g.get("hooks"), list)), None)
+    if g2 is None:
+        g2 = {"matcher": matcher, "hooks": []}
+        groups.append(g2)
+    if any(isinstance(h, dict) and h.get("command") == start_led for h in g2["hooks"]):
+        changes.append("SessionStart %s --ledger already present" % matcher)
+    else:
+        g2["hooks"].append({"type": "command", "command": start_led, "timeout": 10})
+        changes.append("add SessionStart %s --ledger (timeout 10)" % matcher)
 
 # permission so the model can write its handoff without a prompt
 perms = data.setdefault("permissions", {})

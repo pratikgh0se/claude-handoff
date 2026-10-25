@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # claude-handoff uninstaller: removes exactly what install.sh added.
 # Usage: ./uninstall.sh [--dry-run]
-# Handoff files in ~/.local/state/claude-handoffs are kept (delete that folder yourself if you want them gone).
+# Handoff files and project ledgers in ~/.local/state/claude-handoffs are kept (delete that folder yourself if you want them gone).
 set -euo pipefail
 
 DRY=0
@@ -30,6 +30,8 @@ marker_path = os.path.join(hooks_dir, ".claude-handoff-install.json")
 tag = "[dry-run] " if dry else ""
 ours = {"python3 %s/%s" % (hooks_dir, s) for s in ("precompact-handoff.py", "handoff-nudge.py")}
 ours |= {"python3 %s/postcompact-inject.py --part %d" % (hooks_dir, n) for n in (1, 2, 3)}
+ours |= {"python3 %s/postcompact-inject.py --ledger --part %d" % (hooks_dir, n) for n in (1, 2)}
+ours.add("python3 %s/postcompact-inject.py --ledger" % hooks_dir)
 ours.add("python3 %s/postcompact-inject.py" % hooks_dir)  # --part-less form
 allow_rule = "Edit(~/.local/state/claude-handoffs/**)"
 
@@ -112,6 +114,7 @@ for f in precompact-handoff.py postcompact-inject.py handoff-nudge.py .claude-ha
 done
 
 echo "kept $STATE_DIR (handoffs and health.jsonl); delete it yourself if you do not want them"
+echo "kept the project decision ledgers under $STATE_DIR/projects/ (delete that folder yourself to forget them)"
 for b in "$HOOKS_DIR"/.claude-handoff-backup-*; do [ -e "$b" ] && echo "kept backup: $b"; done
 echo "Done. Restart Claude Code."
 exit 0
