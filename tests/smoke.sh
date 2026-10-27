@@ -87,6 +87,7 @@ case "$sys" in
   *"decisions ledger"*)
     printf '%s\n' "$@" > "$SHIM_LOG.merge"
     cat > "$SHIM_LOG.merge.stdin"
+    [ -n "${MERGE_SLEEP:-}" ] && sleep "$MERGE_SLEEP"
     [ -n "${SHIM_MERGE_OUT:-}" ] && cat "$SHIM_MERGE_OUT"
     exit 0 ;;
 esac
@@ -151,8 +152,10 @@ cat > "$M1" <<'TXT'
 - D2 [2026-10-20] Never push to main without review | why: release rule
 TXT
 cat > "$M2" <<'TXT'
-- D2 [2026-10-20] SUPERSEDED by D3 [2026-10-21]: Never push to main without review | because: replaced
 - D3 [2026-10-21] Push to main only after CI passes | why: new release rule
+SUPERSEDE D2 BY D3: replaced
+prose that is not a change line
+SUPERSEDE D9 BY D3: unknown old id is ignored
 TXT
 run_led() {
   local sid="$1" cwd="$2" tr="$3" mo="$4"; shift 4
@@ -171,19 +174,29 @@ tail -n 1 "$ST/health.jsonl" | grep -q '"ledger": *"ok"' || fail "health lacks l
 [ -s "$T/shim.log" ] && grep -q "SHIM-SUMMARY" "$ST/led1-latest.md" || fail "summary call did not run alongside the merge"
 ok "ledger created for a project folder; merge and summary calls told apart"
 
-# second compaction: model drops D1 (restored), supersedes D2, adds D3
+# second compaction (F40 delta): model outputs only D3 and a SUPERSEDE of D2
 python3 - "$TR2" <<'PY'
 import json, sys
 r = {"type": "user", "timestamp": "2026-10-21T09:00:00.000Z", "message": {"content": "Decision: push to main only after CI passes"}}
 open(sys.argv[1], "a").write(json.dumps(r) + "\n")
 PY
 run_led led1 "$PR" "$TR2" "$M2"
-grep -q "^- D1 \[2026-10-20\] Use tabs" "$LF" || fail "dropped D1 was not restored"
+grep -q "^- D1 \[2026-10-20\] Use tabs" "$LF" || fail "D1 lost after a delta merge"
 grep -q "^- D2 \[2026-10-20\] SUPERSEDED by D3" "$LF" || fail "D2 not marked superseded"
 grep -q "^- D3 " "$LF" || fail "D3 not added"
-tail -n 1 "$ST/health.jsonl" | grep -q '"ledger_restored": *1' || fail "health lacks ledger_restored 1"
+tail -n 1 "$ST/health.jsonl" | grep -q '"ledger_restored": *0' || fail "health lacks ledger_restored 0"
+tail -n 1 "$ST/health.jsonl" | grep -q '"ledger_error": *""' || fail "health lacks empty ledger_error"
+! grep -q "D9" "$LF" || fail "invalid SUPERSEDE line was applied"
 ls "$(dirname "$LF")"/decisions.[0-9]*T*Z.md >/dev/null 2>&1 || fail "no backup of the previous ledger"
-ok "second compaction keeps old ids (dropped entry restored, none deleted)"
+ok "delta merge applies valid changes, ignores invalid ones, deletes nothing"
+
+# F40.2: own ledger timeout, health ledger_error
+PT="$T/toproj"; mkdir -p "$PT"
+s0=$SECONDS
+run_led led4 "$PT" "$TR2" "$M1" HANDOFF_LEDGER_TIMEOUT=2 MERGE_SLEEP=10
+[ $((SECONDS - s0)) -le 12 ] || fail "ledger timeout took too long"
+tail -n 1 "$ST/health.jsonl" | grep -q '"ledger": *"failed"' && tail -n 1 "$ST/health.jsonl" | grep -q '"ledger_error": *"timeout"' || fail "health lacks ledger failed/timeout"
+ok "HANDOFF_LEDGER_TIMEOUT=2 gives ledger_error timeout"
 
 # inject: compact parts and startup/resume
 inj() { printf '{"cwd":"%s"}' "$PR" | python3 "$H/postcompact-inject.py" --ledger; }

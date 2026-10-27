@@ -2,7 +2,7 @@
 # claude-handoff installer: copies three hooks and merges them into ~/.claude/settings.json.
 set -euo pipefail
 
-VERSION="0.3.0"
+VERSION="0.4.0"
 usage() {
   cat <<EOF
 claude-handoff $VERSION
@@ -113,10 +113,16 @@ def has_cmd(groups, cmd):
 
 groups = hooks.setdefault("PreCompact", [])
 if has_cmd(groups, pre):
-    changes.append("PreCompact hook already present")
+    bumped = False
+    for g in groups:
+        for h in (g.get("hooks", []) if isinstance(g, dict) else []):
+            if isinstance(h, dict) and h.get("command") == pre and isinstance(h.get("timeout"), (int, float)) and h["timeout"] < 150:
+                h["timeout"] = 150
+                bumped = True
+    changes.append("PreCompact hook already present" + (" (timeout raised to 150)" if bumped else ""))
 else:
-    groups.append({"hooks": [{"type": "command", "command": pre, "timeout": 90}]})
-    changes.append("add PreCompact hook (timeout 90)")
+    groups.append({"hooks": [{"type": "command", "command": pre, "timeout": 150}]})
+    changes.append("add PreCompact hook (timeout 150)")
 
 groups = hooks.setdefault("PostToolUse", [])
 if has_cmd(groups, nudge):

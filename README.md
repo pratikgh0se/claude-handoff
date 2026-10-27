@@ -81,7 +81,7 @@ Options: `--window N`, `--no-window`, `--dry-run`, `--force`, `--version`, `--he
 It changes:
 
 - copies `precompact-handoff.py`, `postcompact-inject.py`, `handoff-nudge.py` to `~/.claude/hooks/` (an existing file with a different content is first saved to `~/.claude/hooks/.claude-handoff-backup-<timestamp>/`);
-- merges into `~/.claude/settings.json` (backup `settings.json.bak-<timestamp>`): a PreCompact hook (timeout 90), a PostToolUse hook (matcher `*`, timeout 5), a SessionStart `compact` group with the three inject commands and the two `--ledger --part 1/2` commands (timeout 10), SessionStart `startup` and `resume` groups with `postcompact-inject.py --ledger` (timeout 10), `permissions.allow` entry `Edit(~/.local/state/claude-handoffs/**)` so the model can write its handoff without a prompt, and `env.CLAUDE_CODE_AUTO_COMPACT_WINDOW` = `"400000"` unless already set;
+- merges into `~/.claude/settings.json` (backup `settings.json.bak-<timestamp>`): a PreCompact hook (timeout 150), a PostToolUse hook (matcher `*`, timeout 5), a SessionStart `compact` group with the three inject commands and the two `--ledger --part 1/2` commands (timeout 10), SessionStart `startup` and `resume` groups with `postcompact-inject.py --ledger` (timeout 10), `permissions.allow` entry `Edit(~/.local/state/claude-handoffs/**)` so the model can write its handoff without a prompt, and `env.CLAUDE_CODE_AUTO_COMPACT_WINDOW` = `"400000"` unless already set;
 - creates `~/.local/state/claude-handoffs/`.
 
 Your other hooks and settings are left alone: new entries are appended next to existing ones. Restart Claude Code afterwards.
@@ -131,6 +131,7 @@ Environment variables the hooks honour:
 | `HANDOFF_SUMMARY_TIMEOUT` | Seconds to wait for the summary (1-300). Default 75. |
 | `HANDOFF_LEDGER=0` | Disable the project decisions list: no merge call, nothing written, nothing injected (compaction or session start). |
 | `HANDOFF_LEDGER_MODEL` | Model for the decisions update. Default: the summary model (`sonnet`). |
+| `HANDOFF_LEDGER_TIMEOUT` | Seconds to wait for the decisions update (1-300). Default 100, independent of the summary timeout. The PreCompact hook timeout is 150. |
 | `HANDOFF_HAIKU_FALLBACK=0` | Legacy switch from 0.1.x; still honoured and also disables the fresh summary. |
 | `HANDOFF_STATE_DIR` | Use another directory instead of `~/.local/state/claude-handoffs`. |
 | `HANDOFF_HOOK_CHILD` | Set by the hook for its own summary call so it never recurses. Do not set it yourself. |
@@ -163,7 +164,7 @@ Environment variables the hooks honour:
 ## Limitations
 
 - The nudge only works if the model obeys it. If it does not, you still get the fresh summary, which is lossier than the model's own note.
-- The fresh summary and the decisions update each run `claude -p --model sonnet` and use some of your quota (one call each per compaction, 75 s timeout by default).
+- The fresh summary and the decisions update each run `claude -p --model sonnet` and use some of your quota (one call each per compaction; 75 s summary timeout and 100 s decisions timeout by default).
 - The decisions list needs `fcntl` (macOS and Linux) and only records what you said in chat; a decision you never wrote or approved is not captured.
 - The nudge reads context size from the transcript's last usage entry, so it lags by one assistant message.
 - The order in which the three injected parts appear in context is not guaranteed; each part names its number.
