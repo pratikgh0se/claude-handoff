@@ -1,8 +1,8 @@
 # claude-handoff
 
-[![CI](https://github.com/pratikgh0se/claude-handoff/actions/workflows/ci.yml/badge.svg)](https://github.com/pratikgh0se/claude-handoff/actions/workflows/ci.yml)
+[![CI](https://github.com/pratikgh0se/claude-handoff/actions/workflows/ci.yml/badge.svg)](https://github.com/pratikgh0se/claude-handoff/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE) [![Release](https://img.shields.io/github/v/release/pratikgh0se/claude-handoff)](https://github.com/pratikgh0se/claude-handoff/releases/latest)
 
-Auto-compaction plus a handoff for Claude Code. Extracted from [Bento (machine-setup)](https://github.com/pratikgh0se/machine-setup) v1.0.0. Three small hooks (plus a per-project decisions list), no dependencies beyond Python 3, one command to install and one to remove.
+**Claude Code hooks that write a handoff before auto-compaction, so a long session keeps its goal, decisions and exact next step.** Three small hooks plus a per-project decisions list, no dependencies beyond Python 3, one command to install and one to remove. Extracted from [Bento](https://github.com/pratikgh0se/machine-setup).
 
 ## The problem
 
