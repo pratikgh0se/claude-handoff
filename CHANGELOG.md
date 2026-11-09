@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.5.0] - 2026-11-09
+
+Ledger kinds, lossless injection, later reminders (machine-setup F40.x, F41, F42, F43).
+
+- `precompact-handoff.py` and `postcompact-inject.py` 1.6.0 copied from machine-setup.
+- Decision kinds: every ledger entry is tagged `[rule]`, `[decision]` or `[task]` (untagged old lines count as decisions). New `RESOLVE D<n>: <reason>` marks finished tasks and one-offs `RESOLVED` (kept in the file, no longer injected). Rules are never resolved by the model.
+- Lossless injection: the ledger is injected in three parts (`--ledger --part 1/2/3`) at compaction, `startup` and `resume`. Standing rules come first and always in full, then decisions, then tasks; entries that do not fit in full become one-line index entries, so nothing is dropped.
+- `--ledger-maintain <repo>`: one pass over an existing list that tags entries, resolves finished tasks and supersedes contradictions, without adding entries or editing text.
+- Handoff file: seventh heading `Parallel work running` (background agents and long jobs, or "none"); a stale-note warning when the model's own handoff did not change its living sections since the last reminder.
+- `handoff-nudge.py`: reminders at 75% of the window, then every 25,000 tokens (was 50,000), plus one final "Compaction is imminent" note. Steps stay 12,000 tokens below the real compaction point (window minus 33,000): 300k, 325k, 350k and a final at 355k for a 400k window. Records section hashes so a stale handoff is called out. The nudge also asks the model to list standing rules under Decisions and why.
+- `install.sh` registers `--ledger --part 1/2/3` for `compact`, `startup` and `resume`, and replaces the old single `--ledger` entry on re-run. `uninstall.sh` removes all of them.
+- `tests/smoke.sh` updated for three parts, no-loss check over 40 entries, and the new nudge cadence.
+
 ## [0.4.0] - 2026-10-27
 
 Faster decisions updates (machine-setup F40).

@@ -2,7 +2,7 @@
 # claude-handoff installer: copies three hooks and merges them into ~/.claude/settings.json.
 set -euo pipefail
 
-VERSION="0.4.0"
+VERSION="0.5.0"
 usage() {
   cat <<EOF
 claude-handoff $VERSION
@@ -59,8 +59,8 @@ ts = os.environ["HC_TS"]
 pre = "python3 %s/precompact-handoff.py" % hooks_dir
 nudge = "python3 %s/handoff-nudge.py" % hooks_dir
 post = ["python3 %s/postcompact-inject.py --part %d" % (hooks_dir, n) for n in (1, 2, 3)]
-post_led = ["python3 %s/postcompact-inject.py --ledger --part %d" % (hooks_dir, n) for n in (1, 2)]
-start_led = "python3 %s/postcompact-inject.py --ledger" % hooks_dir
+post_led = ["python3 %s/postcompact-inject.py --ledger --part %d" % (hooks_dir, n) for n in (1, 2, 3)]
+start_led = "python3 %s/postcompact-inject.py --ledger" % hooks_dir  # pre-0.5.0 startup/resume form, migrated away
 allow_rule = "Edit(~/.local/state/claude-handoffs/**)"
 marker_path = os.path.join(hooks_dir, ".claude-handoff-install.json")
 tag = "[dry-run] " if dry else ""
@@ -158,10 +158,14 @@ for matcher in ("startup", "resume"):
         g2 = {"matcher": matcher, "hooks": []}
         groups.append(g2)
     if any(isinstance(h, dict) and h.get("command") == start_led for h in g2["hooks"]):
-        changes.append("SessionStart %s --ledger already present" % matcher)
-    else:
-        g2["hooks"].append({"type": "command", "command": start_led, "timeout": 10})
-        changes.append("add SessionStart %s --ledger (timeout 10)" % matcher)
+        g2["hooks"] = [h for h in g2["hooks"] if not (isinstance(h, dict) and h.get("command") == start_led)]
+        changes.append("SessionStart %s: replace the old single --ledger command with --ledger --part 1/2/3" % matcher)
+    for n, cmd in enumerate(post_led, 1):
+        if any(isinstance(h, dict) and h.get("command") == cmd for h in g2["hooks"]):
+            changes.append("SessionStart %s --ledger --part %d already present" % (matcher, n))
+        else:
+            g2["hooks"].append({"type": "command", "command": cmd, "timeout": 10})
+            changes.append("add SessionStart %s --ledger --part %d (timeout 10)" % (matcher, n))
 
 # permission so the model can write its handoff without a prompt
 perms = data.setdefault("permissions", {})

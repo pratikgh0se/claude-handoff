@@ -44,8 +44,9 @@ assert [x["command"] for x in d["hooks"]["PreCompact"][0]["hooks"]] == ["python3
 ss = {g["matcher"]: [x["command"] for x in g["hooks"]] for g in d["hooks"]["SessionStart"]}
 assert sorted(ss) == ["compact", "resume", "startup"], ss
 pi = "python3 %s/postcompact-inject.py" % h
-assert ss["compact"] == [pi + " --part 1", pi + " --part 2", pi + " --part 3", pi + " --ledger --part 1", pi + " --ledger --part 2"], ss
-assert ss["startup"] == ["echo hello", pi + " --ledger"] and ss["resume"] == [pi + " --ledger"], ss
+assert ss["compact"] == [pi + " --part 1", pi + " --part 2", pi + " --part 3", pi + " --ledger --part 1", pi + " --ledger --part 2", pi + " --ledger --part 3"], ss
+led3 = [pi + " --ledger --part %d" % n for n in (1, 2, 3)]
+assert ss["startup"] == ["echo hello"] + led3 and ss["resume"] == led3, ss
 assert all(x["timeout"] == 10 for g in d["hooks"]["SessionStart"] for x in g["hooks"] if "inject" in x["command"])
 assert d["hooks"]["PostToolUse"][0]["hooks"][0]["timeout"] == 5
 assert "Edit(~/.local/state/claude-handoffs/**)" in d["permissions"]["allow"]
@@ -221,11 +222,13 @@ with open(sys.argv[1], "w") as f:
 PY
 p1="$(printf '{"cwd":"%s"}' "$PB" | python3 "$H/postcompact-inject.py" --ledger --part 1 | inj_ctx)"
 p2="$(printf '{"cwd":"%s"}' "$PB" | python3 "$H/postcompact-inject.py" --ledger --part 2 | inj_ctx)"
-pl="$(printf '{"cwd":"%s"}' "$PB" | python3 "$H/postcompact-inject.py" --ledger | inj_ctx)"
-[ "${#p1}" -lt 10000 ] && [ "${#p2}" -lt 10000 ] || fail "ledger part over 10,000 chars"
-echo "$p1" | grep -q "D40 " && echo "$p2" | grep -q "part 2 of the ledger" && echo "$p2" | grep -q "older active decisions in the full ledger" || fail "part 2 content wrong"
-[ "${#pl}" -lt 4600 ] && echo "$pl" | grep -q "older active decisions in the full ledger)" || fail "plain --ledger not cut to about 4,000 chars"
-ok "--ledger --part 1/2 and plain --ledger print the entries"
+p3="$(printf '{"cwd":"%s"}' "$PB" | python3 "$H/postcompact-inject.py" --ledger --part 3 | inj_ctx)"
+[ "${#p1}" -lt 10000 ] && [ "${#p2}" -lt 10000 ] && [ "${#p3}" -lt 10000 ] || fail "ledger part over 10,000 chars"
+echo "$p1" | grep -q "D40 " && echo "$p2" | grep -q "part 2 of the ledger" || fail "part 2 content wrong"
+# nothing is dropped: every one of the 40 entries appears in parts 1-3 (in full or as an index line)
+allp="$p1 $p2 $p3"
+for i in $(seq 1 40); do echo "$allp" | grep -q "D$i " || fail "entry D$i missing from the 3 parts"; done
+ok "--ledger --part 1/2/3 and plain --ledger print the entries, nothing dropped"
 
 # git: the ledger is keyed on the repo root, so a subfolder reaches the same file
 if command -v git >/dev/null 2>&1; then
@@ -245,7 +248,7 @@ PO="$T/offproj"; mkdir -p "$PO"
 run_led led3 "$PO" "$TR2" "$M1" HANDOFF_LEDGER=0
 ls -d "$ST"/projects/offproj-* >/dev/null 2>&1 && fail "HANDOFF_LEDGER=0 still wrote a ledger"
 tail -n 1 "$ST/health.jsonl" | grep -q '"ledger": *"disabled"' || fail "health ledger not disabled"
-for args in "--ledger" "--ledger --part 1" "--ledger --part 2"; do
+for args in "--ledger" "--ledger --part 1" "--ledger --part 2" "--ledger --part 3"; do
   # shellcheck disable=SC2086
   [ -z "$(printf '{"cwd":"%s"}' "$PR" | HANDOFF_LEDGER=0 python3 "$H/postcompact-inject.py" $args)" ] || fail "HANDOFF_LEDGER=0: inject $args printed output"
 done
@@ -275,9 +278,11 @@ mk 355000; o3="$(nudge)"
 [ -n "$o1" ] && [ -z "$o2" ] && [ -n "$o3" ] || fail "nudge pattern wrong (got: ${#o1} ${#o2} ${#o3} chars)"
 echo "$o1" | grep -q "nsess-agent.md" || fail "nudge lacks agent path"
 echo "$o1" | grep -q "claude-handoff PostToolUse hook that the user installed" || fail "nudge does not identify its source"
-python3 -c "import json,sys; t=json.load(sys.stdin)['hookSpecificOutput']['additionalContext']; assert len(t)<900, len(t)" <<<"$o1" || fail "nudge too long"
+python3 -c "import json,sys; t=json.load(sys.stdin)['hookSpecificOutput']['additionalContext']; assert len(t)<1300, len(t)" <<<"$o1" || fail "nudge too long"
 echo "$o1" | python3 -c "import json,sys; assert json.load(sys.stdin)['hookSpecificOutput']['hookEventName']=='PostToolUse'"
-ok "nudge fires at 310k, not at 320k, again at 355k"
+echo "$o1" | grep -q "Parallel work running" && ! echo "$o1" | grep -q "imminent" || fail "first nudge: seventh heading missing or wrongly imminent"
+echo "$o3" | grep -q "Compaction is imminent" || fail "final nudge at 355k lacks the imminent wording"
+ok "nudge fires at 310k, not at 320k, again (final) at 355k"
 
 # Agent write is recorded in meta
 printf '{"session_id":"nsess","transcript_path":"%s","tool_name":"Write","tool_input":{"file_path":"%s"}}' "$TR" "$ST/nsess-agent.md" | python3 "$H/handoff-nudge.py" >/dev/null

@@ -12,22 +12,26 @@ Long Claude Code sessions lose context when they compact. The summary Claude Cod
 
 ![Handoff timeline](docs/handoff-timeline.svg)
 
-1. **Nudge** (`handoff-nudge.py`, PostToolUse). When context reaches 75% of the auto-compact window, and again every 50,000 tokens, one short note is appended to a tool result asking the working model to write its own handoff to `~/.local/state/claude-handoffs/<session_id>-agent.md` with six fixed headings: Goal, Decisions and why, Done, In progress, Dead ends, Exact next step. It costs no extra turn. The hook also records in `<session_id>-agent.meta.json` when the model wrote the file.
+1. **Nudge** (`handoff-nudge.py`, PostToolUse). When context reaches 75% of the auto-compact window, and again every 25,000 tokens, one short note is appended to a tool result asking the working model to write its own handoff to `~/.local/state/claude-handoffs/<session_id>-agent.md` with seven fixed headings: Goal, Parallel work running, Decisions and why, Done, In progress, Dead ends, Exact next step. With a 400k window the reminders come at 300k, 325k and 350k, plus one final note worded "Compaction is imminent" at 355k. The last reminder is kept about 12,000 tokens below the real compaction point (window minus 33,000), so the model still has room to write the file. Under "Parallel work running" the model lists every background agent or long job that is running or queued. If the three living sections (Parallel work running, In progress, Exact next step) are byte-identical to the previous reminder, the next note says the handoff is stale and asks for a rewrite. It costs no extra turn. The hook also records in `<session_id>-agent.meta.json` when the model wrote the file.
 2. **Handoff** (`precompact-handoff.py`, PreCompact). Just before compaction it writes `<session_id>-latest.md` (capped at 14,000 chars). It starts with a short authority line that tells the model whom to believe when sources disagree (see below). Contents:
    - the model's own handoff, if there is one (labelled stale when it is out of date);
    - on every compaction, a fresh summary written by Sonnet (`claude -p --model sonnet`) of the conversation since the last compaction, placed after the model's own note and clearly labelled "verify against facts". It replaces the old Haiku fallback. It runs in parallel with the decisions-list update (below), so a compaction takes about 20-40 s in total;
    - always a facts section extracted from the transcript without any model: your last 8 messages, files touched, task state, git branch and status, last Bash commands, last assistant message (each tool call is one line ending `-> ok`, `-> error` or `-> no result`).
    It always exits 0 and never blocks compaction. If anything fails inside it, a minimal handoff is still written.
-3. **Inject** (`postcompact-inject.py`, SessionStart with matcher `compact`). After compaction it feeds the handoff back into the new context. Claude Code caps each hook's injected text at 10,000 characters, so it runs three times (`--part 1/2/3`); long handoffs are split on section boundaries and the full file path is always named. Two more runs (`--ledger --part 1/2`) inject the decisions list, see below.
+3. **Inject** (`postcompact-inject.py`, SessionStart with matcher `compact`). After compaction it feeds the handoff back into the new context. Claude Code caps each hook's injected text at 10,000 characters, so it runs three times (`--part 1/2/3`); long handoffs are split on section boundaries and the full file path is always named. Three more runs (`--ledger --part 1/2/3`) inject the decisions list, see below. If the model's own handoff is out of date, or its living sections did not change since the last reminder, it is still included but preceded by an `Agent handoff may be stale` warning with the reason.
 
 ## The project decisions list
 
-A handoff is per session, but decisions belong to the project. Version 0.3.0 keeps one plain-text list of decisions per project (a git repo, or the folder you started in when there is no repo). It lives at `~/.local/state/claude-handoffs/projects/<project>-<hash>/decisions.md`, one line per decision: an id (`D12`), the date, what was decided, and why.
+A handoff is per session, but decisions belong to the project. Version 0.3.0 keeps one plain-text list of decisions per project (a git repo, or the folder you started in when there is no repo). It lives at `~/.local/state/claude-handoffs/projects/<project>-<hash>/decisions.md`, one line per decision: an id (`D12`), the date, a kind, what was decided, and why.
+
+- **Kinds.** Every new entry is tagged `[rule]` (a standing rule or working preference, such as "never push without asking"), `[decision]` (a choice) or `[task]` (a follow-up you asked for). Older untagged lines count as decisions.
+- **RESOLVE.** When a task is finished or a one-off has been acted on, the merge call answers `RESOLVE D<n>: <reason>`. The line is marked `RESOLVED` and keeps its old text; it is no longer injected. Rules are never resolved by the model.
 
 - **What goes in.** Only things you decided or explicitly approved: a choice, a rule, a constraint, a permission, a rejected option. Not plans, not progress, not the assistant's own unapproved ideas.
 - **How it is kept up to date.** At every compaction a second Sonnet call reads the conversation since the last update and the current list, and returns the updated list. It runs in parallel with the summary.
-- **Carried across compactions.** After a compaction the list is injected again into the new context (in two parts, newest first), next to the handoff.
-- **Shown in new and resumed chats.** When you start a new chat or resume one in the same repo, the active decisions (newest first, about 4,000 characters) are shown at the start, so a fresh session does not re-ask what you already settled.
+- **Carried across compactions.** After a compaction the list is injected again into the new context in three parts (`--ledger --part 1/2/3`), next to the handoff. Rules come first and always in full, then decisions, then tasks, newest first within each kind. When everything does not fit in 3 x 10,000 characters, the entries that do not fit in full are shown as one-line index entries, so nothing is silently dropped; the index says to read the full line in `decisions.md` before acting on one.
+- **Shown in new and resumed chats.** When you start a new chat or resume one in the same repo, the same three parts are injected at `startup` and `resume`, so a fresh session does not re-ask what you already settled.
+- **Tidying an old list.** `python3 ~/.claude/hooks/precompact-handoff.py --ledger-maintain <repo>` runs one maintenance pass over the whole list of that repo: it tags untagged entries, resolves finished tasks and supersedes contradictions. It adds no entries and edits no text, and prints one summary line.
 - **Never deleted.** When you change your mind, the old decision is only marked `SUPERSEDED by D<n>` with the reason; it stays in the file. Before each update the previous list is saved as `decisions.<timestamp>.md` (the newest 20 are kept).
 - **Code checks the model.** Sonnet proposes, plain code decides: an entry the model drops is put back, a superseded entry is never revived, existing ids never change, over-long lines are shortened rather than dropped, and a result with no valid line is thrown away. A project lock keeps two compactions in the same repo from overwriting each other.
 
@@ -81,7 +85,7 @@ Options: `--window N`, `--no-window`, `--dry-run`, `--force`, `--version`, `--he
 It changes:
 
 - copies `precompact-handoff.py`, `postcompact-inject.py`, `handoff-nudge.py` to `~/.claude/hooks/` (an existing file with a different content is first saved to `~/.claude/hooks/.claude-handoff-backup-<timestamp>/`);
-- merges into `~/.claude/settings.json` (backup `settings.json.bak-<timestamp>`): a PreCompact hook (timeout 150), a PostToolUse hook (matcher `*`, timeout 5), a SessionStart `compact` group with the three inject commands and the two `--ledger --part 1/2` commands (timeout 10), SessionStart `startup` and `resume` groups with `postcompact-inject.py --ledger` (timeout 10), `permissions.allow` entry `Edit(~/.local/state/claude-handoffs/**)` so the model can write its handoff without a prompt, and `env.CLAUDE_CODE_AUTO_COMPACT_WINDOW` = `"400000"` unless already set;
+- merges into `~/.claude/settings.json` (backup `settings.json.bak-<timestamp>`): a PreCompact hook (timeout 150), a PostToolUse hook (matcher `*`, timeout 5), a SessionStart `compact` group with the three inject commands and the three `--ledger --part 1/2/3` commands (timeout 10), SessionStart `startup` and `resume` groups with the three `--ledger --part 1/2/3` commands (timeout 10; an older single `--ledger` entry is replaced), `permissions.allow` entry `Edit(~/.local/state/claude-handoffs/**)` so the model can write its handoff without a prompt, and `env.CLAUDE_CODE_AUTO_COMPACT_WINDOW` = `"400000"` unless already set;
 - creates `~/.local/state/claude-handoffs/`.
 
 Your other hooks and settings are left alone: new entries are appended next to existing ones. Restart Claude Code afterwards.
@@ -125,7 +129,7 @@ Environment variables the hooks honour:
 
 | Variable | Effect |
 |---|---|
-| `CLAUDE_CODE_AUTO_COMPACT_WINDOW` | Window size in tokens. The nudge thresholds are 75% of it, then every 50,000. Default 400000 if unset. |
+| `CLAUDE_CODE_AUTO_COMPACT_WINDOW` | Window size in tokens. The nudge thresholds are 75% of it, then every 25,000, then a final note (window minus 45,000). Default 400000 if unset. |
 | `HANDOFF_SUMMARY=0` | Disable the fresh summary at compaction (no model call; facts only). |
 | `HANDOFF_SUMMARY_MODEL` | Model for the fresh summary. Default `sonnet`. |
 | `HANDOFF_SUMMARY_TIMEOUT` | Seconds to wait for the summary (1-300). Default 75. |
@@ -138,7 +142,7 @@ Environment variables the hooks honour:
 
 ## FAQ
 
-**Does it cost tokens?** About one short note per nudge (once at 75% of the window, then every 50,000 tokens), plus up to about 14,000 characters injected once per compaction and up to about 20,000 characters of decisions. Each compaction adds two `claude -p` Sonnet calls, the fresh summary and the decisions update (about 20-40 s in parallel, roughly $0.10-0.20 of API-equivalent usage). Set `HANDOFF_SUMMARY=0` and `HANDOFF_LEDGER=0` to avoid them.
+**Does it cost tokens?** About one short note per nudge (at 75% of the window, then every 25,000 tokens, then a final one), plus up to about 14,000 characters injected once per compaction and up to about 20,000 characters of decisions. Each compaction adds two `claude -p` Sonnet calls, the fresh summary and the decisions update (about 20-40 s in parallel, roughly $0.10-0.20 of API-equivalent usage). Set `HANDOFF_SUMMARY=0` and `HANDOFF_LEDGER=0` to avoid them.
 
 **Does it work in the desktop app?** Yes. The desktop app runs the same hooks from `~/.claude/settings.json`.
 
@@ -157,7 +161,7 @@ Environment variables the hooks honour:
 - Logs and health live in `~/.local/state/claude-handoffs/` (or `$HANDOFF_STATE_DIR`). Start with `tail -n 5 ~/.local/state/claude-handoffs/health.jsonl`: one line per compaction with `status` `ok`, `reduced` or `degraded`.
 - `<sid>-degraded.json` and `<sid>-last-health.json` in the same folder say why a compaction was degraded.
 - No health line after `/compact`: restart Claude Code (hooks load at startup), then check `~/.claude/settings.json` has the `PreCompact` entry and that `python3 ~/.claude/hooks/precompact-handoff.py` exists.
-- No nudge appears: it only fires above 75% of the window and needs the transcript to contain a usage entry; check `CLAUDE_CODE_AUTO_COMPACT_WINDOW` in `settings.json`.
+- No nudge appears: it only fires above 75% of the window (300k for a 400k window) and needs the transcript to contain a usage entry; check `CLAUDE_CODE_AUTO_COMPACT_WINDOW` in `settings.json`.
 - Settings or hooks got into a bad state: install and uninstall leave timestamped backups (`settings.json.bak-*`, `~/.claude/hooks/.claude-handoff-backup-*`).
 - Something else: run `bash tests/smoke.sh`, then open an issue using the bug report template.
 

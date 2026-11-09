@@ -30,7 +30,7 @@ marker_path = os.path.join(hooks_dir, ".claude-handoff-install.json")
 tag = "[dry-run] " if dry else ""
 ours = {"python3 %s/%s" % (hooks_dir, s) for s in ("precompact-handoff.py", "handoff-nudge.py")}
 ours |= {"python3 %s/postcompact-inject.py --part %d" % (hooks_dir, n) for n in (1, 2, 3)}
-ours |= {"python3 %s/postcompact-inject.py --ledger --part %d" % (hooks_dir, n) for n in (1, 2)}
+ours |= {"python3 %s/postcompact-inject.py --ledger --part %d" % (hooks_dir, n) for n in (1, 2, 3)}
 ours.add("python3 %s/postcompact-inject.py --ledger" % hooks_dir)
 ours.add("python3 %s/postcompact-inject.py" % hooks_dir)  # --part-less form
 allow_rule = "Edit(~/.local/state/claude-handoffs/**)"
