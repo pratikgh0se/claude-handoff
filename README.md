@@ -4,7 +4,24 @@
 
 [![CI](https://github.com/pratikgh0se/lossless-handoff/actions/workflows/ci.yml/badge.svg)](https://github.com/pratikgh0se/lossless-handoff/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE) [![Release](https://img.shields.io/github/v/release/pratikgh0se/lossless-handoff)](https://github.com/pratikgh0se/lossless-handoff/releases/latest)
 
-**Lossless context management with auto handoff for Claude Code, based on the LCM paper (arXiv:2605.04050).** Hooks that write a handoff before auto-compaction, a per-project decisions list, and a `recall` command that finds the exact words of earlier chats. No dependencies beyond Python 3, one command to install and one to remove. Extracted from [Bento](https://github.com/pratikgh0se/machine-setup).
+**Claude Code hooks for lossless context.** Before every auto-compaction a handoff is written and fed back in, each project keeps a decisions list that survives compactions, and `recall` finds the exact words of earlier chats (keyword + local semantic search). Python 3 only. Based on the LCM paper (arXiv:2605.04050).
+
+![How a handoff flows through a compaction](docs/handoff-timeline.svg)
+<!-- TODO: short GIF of recall finding an old instruction after compaction -->
+
+## Install
+
+```bash
+git clone https://github.com/pratikgh0se/lossless-handoff.git && cd lossless-handoff && ./install.sh
+```
+
+Optional, for search by meaning: `ollama pull bge-m3`, then `python3 ~/.claude/hooks/recall.py index` once per project.
+
+## Quick start
+
+1. Work as usual. When Claude Code compacts, the handoff and decisions list are injected automatically.
+2. After a compaction, ask "what exactly did I say about X?" and Claude runs recall and quotes you.
+3. Try it yourself: `python3 ~/.claude/hooks/recall.py user --last 5`
 
 ## Built on the LCM paper
 
@@ -50,8 +67,6 @@ Measured on the author's machine on 2026-11-13/14, on the author's own projects.
 Long Claude Code sessions lose context when they compact. The summary Claude Code writes is generic. It drops the exact next step, the dead ends you already ruled out, and your latest instructions. After a compaction the model often re-does work or asks what you wanted.
 
 ## What it does
-
-![Handoff timeline](docs/handoff-timeline.svg)
 
 1. **Nudge** (`handoff-nudge.py`, PostToolUse). When context reaches 75% of the auto-compact window, and again every 25,000 tokens, one short note is appended to a tool result asking the working model to write its own handoff to `~/.local/state/claude-handoffs/<session_id>-agent.md` with seven fixed headings: Goal, Parallel work running, Decisions and why, Done, In progress, Dead ends, Exact next step. With a 400k window the reminders come at 300k, 325k and 350k, plus one final note worded "Compaction is imminent" at 355k. The last reminder is kept about 12,000 tokens below the real compaction point (window minus 33,000), so the model still has room to write the file. Under "Parallel work running" the model lists every background agent or long job that is running or queued. If the three living sections (Parallel work running, In progress, Exact next step) are byte-identical to the previous reminder, the next note says the handoff is stale and asks for a rewrite. It costs no extra turn. The hook also records in `<session_id>-agent.meta.json` when the model wrote the file.
 2. **Handoff** (`precompact-handoff.py`, PreCompact). Just before compaction it writes `<session_id>-latest.md` (capped at 14,000 chars). It starts with a short authority line that tells the model whom to believe when sources disagree (see below). Contents:
