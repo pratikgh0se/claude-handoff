@@ -31,6 +31,20 @@ This is an independent project. It is not written by, affiliated with or endorse
 }
 ```
 
+## Proof it works
+
+Measured on the author's machine on 2026-11-13/14, on the author's own projects. These are measurements, not promises.
+
+| Test | Result |
+|---|---|
+| Lossless retrieval: 497 random messages from before a compaction | 497 of 497 found and returned byte-identical |
+| Meaning search, easy paraphrase test, 118 queries | 98% in the top 10, 89% first |
+| Alignment after compaction, blind quiz of 33 questions | 41/66 with the v0.4 injection, 50/66 with the full decisions list, 65/66 with the decisions list plus recall |
+
+**Lossless retrieval.** 497 randomly sampled messages (297 you, 200 Claude; fixed seed) from before a compaction, across 4 projects with up to 196 compactions each, were found by `recall.py search` and returned byte-identical by `recall.py open --full`. Mean search time 0.7 s, worst 3.1 s on a loaded machine. Limits: it is a sample, not every message. Messages containing secrets are redacted by design. Subagent transcripts are excluded. Messages over 40,000 characters need `--from` paging; that was added in 0.6.1 after the test found one 14,300-character message cut at the old 12,000-character output cap.
+
+**Alignment after compaction.** 33 questions over 3 projects: 24 about old decisions and 9 about exact details found only in the chats. Sonnet answered from what a new chat receives, and a separate blind grader scored each answer 0 to 2. The one miss with recall was recall surfacing an older statement over a current rule, which led to the "decisions list wins" rule in 0.6.1. Limits: one run, questions written by a model, the author's own projects.
+
 ## The problem
 
 Long Claude Code sessions lose context when they compact. The summary Claude Code writes is generic. It drops the exact next step, the dead ends you already ruled out, and your latest instructions. After a compaction the model often re-does work or asks what you wanted.
@@ -83,6 +97,8 @@ python3 ~/.claude/hooks/recall.py search "zebra-mode"          # words, regex or
 python3 ~/.claude/hooks/recall.py search "why we dropped the cache" --meaning
 python3 ~/.claude/hooks/recall.py search "deploy.sh" --keyword --fixed --role user
 python3 ~/.claude/hooks/recall.py open abcd1234:57             # a hit plus 2 messages each side (--around K, --full)
+python3 ~/.claude/hooks/recall.py open abcd1234:57 --full      # the whole message, up to 40,000 chars
+python3 ~/.claude/hooks/recall.py open abcd1234:57 --full --from 40000   # next page of a longer message
 python3 ~/.claude/hooks/recall.py user --last 20               # your own typed messages, newest first
 python3 ~/.claude/hooks/recall.py handoffs                     # this project's handoff files
 python3 ~/.claude/hooks/recall.py index                        # build or refresh the meaning index
@@ -90,6 +106,8 @@ python3 ~/.claude/hooks/recall.py index                        # build or refres
 
 Every command accepts `--cwd DIR` (default: the current folder). `search` also takes `--session SID8|all`, `--limit N` and `--subagents`. Output is capped at 12,000 characters, and obvious secrets (API keys, tokens, `password=...`) are replaced by `[redacted]` before printing or embedding.
 
+- **Long messages.** `open <id> --full` returns up to 40,000 characters of a message. A longer one ends with a line giving the exact `--from <N>` to continue with, so any message can be read whole in pages.
+- **Recall does not outrank the decisions list.** If recall and the decisions list disagree, or recall disagrees with your latest words, the decisions list and your latest words win. Recall can surface an older statement.
 - **Default is hybrid.** Word hits and meaning hits are merged; each line is tagged `[word]`, `[meaning]` or `[both]`, and the first line says which mode ran. `--keyword` is words only, `--meaning` is the embedding index only.
 - **Words work without any setup.** It uses `rg` if installed, else plain Python.
 - **Meaning search is optional.** It needs a local embedding model: [Ollama](https://ollama.com) with `ollama pull bge-m3`. Build the first index once with `python3 ~/.claude/hooks/recall.py index` from your project folder. After that, each compaction refreshes it in a detached background process that never delays compaction. If the model is not reachable, search says `keyword only` and carries on.

@@ -2,6 +2,18 @@
 
 Lossless Handoff, formerly claude-handoff.
 
+## [0.6.1] - 2026-11-14
+
+Long messages in full, a cold-model timeout fix, and measured results (machine-setup F44.12).
+
+- `recall.py open <id> --full` now returns up to 40,000 characters of a message, and `--from <N>` pages through longer ones. A cut message ends with the exact command to continue. Found by a test that saw a 14,300-character message cut at the old 12,000-character output cap.
+- Embedding calls wait up to 30 s for a cold model and ask Ollama to keep it loaded (`keep_alive`), so the first search after a pause no longer falls back to keyword only.
+- The new-chat context and handoff now say the decisions list and your latest words win over recall when they disagree.
+- `precompact-handoff.py`, `postcompact-inject.py` and `recall.py` 1.7.1 copied from machine-setup.
+- LICENSE copyright line now carries the author's name.
+- README: new "Proof it works" section with measured retrieval, meaning-search and alignment results, including limits.
+- `tests/smoke.sh` checks that a 50,000-character message reassembles byte-exactly from `open --full` plus `open --full --from 40000`.
+
 ## [0.6.0] - 2026-11-14
 
 Renamed to Lossless Handoff, based on the LCM paper (arXiv:2605.04050), plus recall (machine-setup F44, F44.9, F44.10, F44.11).

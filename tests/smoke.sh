@@ -324,6 +324,7 @@ cwd = sys.argv[2]
 rows = [
  {"type": "user", "cwd": cwd, "timestamp": "2026-11-01T10:00:00Z", "message": {"role": "user", "content": "please use the flag --zebra-mode for the export job"}},
  {"type": "assistant", "cwd": cwd, "timestamp": "2026-11-01T10:00:05Z", "message": {"role": "assistant", "content": [{"type": "text", "text": "Done, the export job now runs with --zebra-mode."}]}},
+ {"type": "user", "cwd": cwd, "timestamp": "2026-11-01T10:01:00Z", "message": {"role": "user", "content": "LONGMSG " + "".join("%05d|" % i for i in range(8333))[:49984] + "ENDLONG!"}},
 ]
 open(sys.argv[1], "w").write("\n".join(json.dumps(r) for r in rows) + "\n")
 PY
@@ -336,6 +337,20 @@ o="$(cd "$RP" && python3 "$H/recall.py" user --last 5 2>&1)" && echo "$o" | grep
 o="$(cd "$RP" && python3 "$H/recall.py" index 2>&1)" || fail "recall index should exit 0 with the server down"
 echo "$o" | grep -q "meaning index skipped" || fail "recall index: expected skip message: $o"
 ok "recall: search, open, user and index (keyword only, server down)"
+python3 - "$H/recall.py" "$RP" <<'PY'
+import re, subprocess, sys
+rp, cwd = sys.argv[1], sys.argv[2]
+want = "LONGMSG " + "".join("%05d|" % i for i in range(8333))[:49984] + "ENDLONG!"
+assert len(want) == 50000
+def body(*a):
+    o = subprocess.check_output(["python3", rp, "open", "abcd1234:3", "--around", "0", "--full", "--cwd", cwd, *a], text=True)
+    o = o.split("\n", 1)[1]
+    return re.sub(r"\n?\[cut: \d+ more chars[^\]]*\]\s*$", "", o).rstrip("\n")
+a = body(); b = body("--from", "40000")
+assert len(a) == 40000, len(a)
+assert a + b == want, (len(a), len(b))
+PY
+ok "recall: a 50,000-char message reassembles byte-exactly from open --full + --from 40000"
 
 "$ROOT/uninstall.sh" >"$T/un.out"
 python3 - "$S" "$T/original.json" <<'PY'
