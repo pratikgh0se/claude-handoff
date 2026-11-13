@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# claude-handoff uninstaller: removes exactly what install.sh added.
+# Lossless Handoff uninstaller (formerly claude-handoff): removes exactly what install.sh added.
 # Usage: ./uninstall.sh [--dry-run]
 # Handoff files and project ledgers in ~/.local/state/claude-handoffs are kept (delete that folder yourself if you want them gone).
 set -euo pipefail
@@ -34,6 +34,7 @@ ours |= {"python3 %s/postcompact-inject.py --ledger --part %d" % (hooks_dir, n) 
 ours.add("python3 %s/postcompact-inject.py --ledger" % hooks_dir)
 ours.add("python3 %s/postcompact-inject.py" % hooks_dir)  # --part-less form
 allow_rule = "Edit(~/.local/state/claude-handoffs/**)"
+recall_rule = "Bash(python3 ~/.claude/hooks/recall.py:*)"
 
 if not os.path.exists(path):
     print("%ssettings: %s not found, nothing to edit" % (tag, path)); sys.exit(0)
@@ -83,6 +84,15 @@ if marker.get("allow_added"):
             del perms["allow"]
         if not perms:
             del data["permissions"]
+if marker.get("recall_allow_added"):
+    perms = data.get("permissions")
+    if isinstance(perms, dict) and isinstance(perms.get("allow"), list) and recall_rule in perms["allow"]:
+        perms["allow"].remove(recall_rule)
+        print("%ssettings: removed permissions.allow %s" % (tag, recall_rule))
+        if not perms["allow"]:
+            del perms["allow"]
+        if not perms:
+            del data["permissions"]
 ws = marker.get("window_set")
 if ws is not None:
     env = data.get("env")
@@ -106,7 +116,7 @@ elif not dry:
     print("settings: written %s" % path)
 PY
 
-for f in precompact-handoff.py postcompact-inject.py handoff-nudge.py .claude-handoff-install.json; do
+for f in precompact-handoff.py postcompact-inject.py handoff-nudge.py recall.py .claude-handoff-install.json; do
   if [ -e "$HOOKS_DIR/$f" ]; then
     say "remove $HOOKS_DIR/$f"
     [ "$DRY" = 1 ] || rm "$HOOKS_DIR/$f"

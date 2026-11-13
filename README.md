@@ -1,8 +1,35 @@
-# claude-handoff
+# Lossless Handoff
 
-[![CI](https://github.com/pratikgh0se/claude-handoff/actions/workflows/ci.yml/badge.svg)](https://github.com/pratikgh0se/claude-handoff/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE) [![Release](https://img.shields.io/github/v/release/pratikgh0se/claude-handoff)](https://github.com/pratikgh0se/claude-handoff/releases/latest)
+*Formerly claude-handoff.*
 
-**Claude Code hooks that write a handoff before auto-compaction, so a long session keeps its goal, decisions and exact next step.** Three small hooks plus a per-project decisions list, no dependencies beyond Python 3, one command to install and one to remove. Extracted from [Bento](https://github.com/pratikgh0se/machine-setup).
+[![CI](https://github.com/pratikgh0se/lossless-handoff/actions/workflows/ci.yml/badge.svg)](https://github.com/pratikgh0se/lossless-handoff/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE) [![Release](https://img.shields.io/github/v/release/pratikgh0se/lossless-handoff)](https://github.com/pratikgh0se/lossless-handoff/releases/latest)
+
+**Lossless context management with auto handoff for Claude Code, based on the LCM paper (arXiv:2605.04050).** Hooks that write a handoff before auto-compaction, a per-project decisions list, and a `recall` command that finds the exact words of earlier chats. No dependencies beyond Python 3, one command to install and one to remove. Extracted from [Bento](https://github.com/pratikgh0se/machine-setup).
+
+## Built on the LCM paper
+
+Lossless Handoff is based on, and inspired by, **"LCM: Lossless Context Management"** by Clint Ehrlich and Theodore Blackman ([arXiv:2605.04050](https://arxiv.org/abs/2605.04050)). The paper's idea: when a context window fills up, keep every message verbatim in a store and give the model tools to look things up again, so compaction summarises without destroying anything.
+
+This is an independent project. It is not written by, affiliated with or endorsed by the paper's authors, and the paper's benchmark results are theirs: nothing here repeats them as ours. The only numbers in this README are our own, from the author's machine (see "What to expect").
+
+| From the paper | What we took | What we did differently, and why |
+|---|---|---|
+| Immutable store of every message | Claude Code already keeps each message verbatim in `~/.claude/projects/<slug>/<session>.jsonl`; we use those files as the store and never write to them. | No new database for messages. Nothing to migrate, nothing to keep in sync. |
+| Search and expand tools over the store | `recall.py search` finds words, `recall.py open` expands a hit with the messages around it. | A plain command line tool, not an MCP server: it costs about 0 tokens until used. One line in the injected context tells the model it exists. |
+| Summaries of older context | A fresh summary at each compaction, plus the model's own handoff. | No summary tree. Hooks cannot change how Claude Code builds its context, so we add a handoff and a decisions list next to Claude Code's own summary instead of replacing it. |
+| (not in the paper) | | A per-project decisions list that survives many compactions, and optional search by meaning with a local embedding model, merged with word search. |
+
+```bibtex
+@misc{ehrlich2026lcm,
+  title         = {LCM: Lossless Context Management},
+  author        = {Ehrlich, Clint and Blackman, Theodore},
+  year          = {2026},
+  eprint        = {2605.04050},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.AI},
+  url           = {https://arxiv.org/abs/2605.04050}
+}
+```
 
 ## The problem
 
@@ -47,6 +74,27 @@ What works without the model's cooperation: if the model never writes the agent 
 
 Why a 400k window: the default window is 1M tokens, so sessions rarely compact and pay for their whole context on every turn. A shorter window lowers per-turn cost and avoids the quality loss of very long contexts. The price is more compactions, which the handoff makes safe. See [ADR 0001](https://github.com/pratikgh0se/machine-setup/blob/main/docs/adr/0001-compact-window-400k-with-handoff.md). Use `--window N` to pick another value or `--no-window` to leave the setting alone.
 
+## Recall: find the exact words of earlier chats
+
+A summary keeps decisions but loses exact commands, numbers, paths and your own wording. `recall.py` searches every earlier chat in the same project (all sessions whose folder is inside the project's git root), read-only, over the transcripts Claude Code already keeps. The handoff and the new-chat context carry one line telling the model it can use it.
+
+```
+python3 ~/.claude/hooks/recall.py search "zebra-mode"          # words, regex or meaning (hybrid)
+python3 ~/.claude/hooks/recall.py search "why we dropped the cache" --meaning
+python3 ~/.claude/hooks/recall.py search "deploy.sh" --keyword --fixed --role user
+python3 ~/.claude/hooks/recall.py open abcd1234:57             # a hit plus 2 messages each side (--around K, --full)
+python3 ~/.claude/hooks/recall.py user --last 20               # your own typed messages, newest first
+python3 ~/.claude/hooks/recall.py handoffs                     # this project's handoff files
+python3 ~/.claude/hooks/recall.py index                        # build or refresh the meaning index
+```
+
+Every command accepts `--cwd DIR` (default: the current folder). `search` also takes `--session SID8|all`, `--limit N` and `--subagents`. Output is capped at 12,000 characters, and obvious secrets (API keys, tokens, `password=...`) are replaced by `[redacted]` before printing or embedding.
+
+- **Default is hybrid.** Word hits and meaning hits are merged; each line is tagged `[word]`, `[meaning]` or `[both]`, and the first line says which mode ran. `--keyword` is words only, `--meaning` is the embedding index only.
+- **Words work without any setup.** It uses `rg` if installed, else plain Python.
+- **Meaning search is optional.** It needs a local embedding model: [Ollama](https://ollama.com) with `ollama pull bge-m3`. Build the first index once with `python3 ~/.claude/hooks/recall.py index` from your project folder. After that, each compaction refreshes it in a detached background process that never delays compaction. If the model is not reachable, search says `keyword only` and carries on.
+- **Environment variables.** `RECALL_EMBED_URL` (default `http://localhost:11434`), `RECALL_EMBED_MODEL` (default `bge-m3`), `RECALL_EMBED_BACKEND` (`ollama`, or `openai` for any `/v1/embeddings` server), `RECALL_EMBED_KEY` (optional Bearer token for the `openai` backend).
+
 ## What to expect
 
 Measured on the author's machine over the first 4.7 days with the 400k window (2026-10-15 to 10-20; Opus and Sonnet with a 1M context window, heavy multi-hour sessions):
@@ -68,8 +116,8 @@ Your numbers will differ. Savings come from long sessions on 1M-context models; 
 ## Install
 
 ```
-git clone https://github.com/pratikgh0se/claude-handoff.git
-cd claude-handoff
+git clone https://github.com/pratikgh0se/lossless-handoff.git
+cd lossless-handoff
 ./install.sh --dry-run   # show the plan, change nothing
 ./install.sh
 ```
@@ -77,15 +125,15 @@ cd claude-handoff
 One-liner:
 
 ```
-git clone https://github.com/pratikgh0se/claude-handoff.git && cd claude-handoff && ./install.sh
+git clone https://github.com/pratikgh0se/lossless-handoff.git && cd lossless-handoff && ./install.sh
 ```
 
 Options: `--window N`, `--no-window`, `--dry-run`, `--force`, `--version`, `--help`. If the same hook scripts are already registered in `settings.json` from another path (for example `~/.claude/hooks/` from another setup), install prints those commands and exits 2, because every hook would run twice (duplicate health lines, double injection, two fresh-summary calls). Remove those entries, or pass `--force` to install anyway. Install is idempotent and fails with a clear message if `python3` is missing or `settings.json` is not valid JSON.
 
 It changes:
 
-- copies `precompact-handoff.py`, `postcompact-inject.py`, `handoff-nudge.py` to `~/.claude/hooks/` (an existing file with a different content is first saved to `~/.claude/hooks/.claude-handoff-backup-<timestamp>/`);
-- merges into `~/.claude/settings.json` (backup `settings.json.bak-<timestamp>`): a PreCompact hook (timeout 150), a PostToolUse hook (matcher `*`, timeout 5), a SessionStart `compact` group with the three inject commands and the three `--ledger --part 1/2/3` commands (timeout 10), SessionStart `startup` and `resume` groups with the three `--ledger --part 1/2/3` commands (timeout 10; an older single `--ledger` entry is replaced), `permissions.allow` entry `Edit(~/.local/state/claude-handoffs/**)` so the model can write its handoff without a prompt, and `env.CLAUDE_CODE_AUTO_COMPACT_WINDOW` = `"400000"` unless already set;
+- copies `precompact-handoff.py`, `postcompact-inject.py`, `handoff-nudge.py` and `recall.py` to `~/.claude/hooks/` (an existing file with a different content is first saved to `~/.claude/hooks/.claude-handoff-backup-<timestamp>/`);
+- merges into `~/.claude/settings.json` (backup `settings.json.bak-<timestamp>`): a PreCompact hook (timeout 150), a PostToolUse hook (matcher `*`, timeout 5), a SessionStart `compact` group with the three inject commands and the three `--ledger --part 1/2/3` commands (timeout 10), SessionStart `startup` and `resume` groups with the three `--ledger --part 1/2/3` commands (timeout 10; an older single `--ledger` entry is replaced), `permissions.allow` entry `Edit(~/.local/state/claude-handoffs/**)` so the model can write its handoff without a prompt, `permissions.allow` entry `Bash(python3 ~/.claude/hooks/recall.py:*)` so the model can run recall without a prompt, and `env.CLAUDE_CODE_AUTO_COMPACT_WINDOW` = `"400000"` unless already set;
 - creates `~/.local/state/claude-handoffs/`.
 
 Your other hooks and settings are left alone: new entries are appended next to existing ones. Restart Claude Code afterwards.
@@ -96,7 +144,7 @@ Your other hooks and settings are left alone: new entries are appended next to e
 ./uninstall.sh
 ```
 
-Removes exactly those hook entries (matched by command path, including the `startup` and `resume` ones; other hooks in those groups stay), the allow rule and the window value if install added them, and the three hook files, after backing up settings. Handoff files stay in `~/.local/state/claude-handoffs/`, and so do the project decision lists under `~/.local/state/claude-handoffs/projects/`; delete that folder yourself if you want them gone. Backups are kept.
+Removes exactly those hook entries (matched by command path, including the `startup` and `resume` ones; other hooks in those groups stay), the allow rules and the window value if install added them, and the hook files including `recall.py`, after backing up settings. Handoff files stay in `~/.local/state/claude-handoffs/`, and so do the project decision lists under `~/.local/state/claude-handoffs/projects/`; delete that folder yourself if you want them gone. Backups are kept.
 
 ## What gets written where
 
@@ -105,6 +153,7 @@ Removes exactly those hook entries (matched by command path, including the `star
 | `~/.local/state/claude-handoffs/<sid>-latest.md` | The handoff that is injected after compaction. `<sid>-<timestamp>.md` is a copy. |
 | `<sid>-agent.md` | The model's own handoff (written by the model). |
 | `<sid>-agent.meta.json` | Nudge state and timestamps (numbers only, no text). |
+| `recall-index.json`, `recall/` | Recall caches: which transcripts belong to which project, and the optional meaning index (`<project>.sqlite`, `index.log`). Safe to delete. |
 | `health.jsonl` | One JSON line per compaction: time, trigger, agent file fresh/stale/absent, fallback result, ledger result (`ok`, `unchanged`, `failed`, `locked`, `disabled`) and counts, duration, size, status `ok` / `reduced` / `degraded`. No message text or paths. Rotates at 5,000 lines. |
 | `<sid>-last-health.json`, `<sid>-degraded.json` | Per-session status and degraded reasons. |
 | `projects/<project>-<hash>/decisions.md` | The project's decisions list (kept by uninstall). Beside it: `decisions.<timestamp>.md` (newest 20 previous versions), `decisions.state.json` (what was merged so far), `decisions.lock`. |
@@ -137,6 +186,7 @@ Environment variables the hooks honour:
 | `HANDOFF_LEDGER_MODEL` | Model for the decisions update. Default: the summary model (`sonnet`). |
 | `HANDOFF_LEDGER_TIMEOUT` | Seconds to wait for the decisions update (1-300). Default 100, independent of the summary timeout. The PreCompact hook timeout is 150. |
 | `HANDOFF_HAIKU_FALLBACK=0` | Legacy switch from 0.1.x; still honoured and also disables the fresh summary. |
+| `RECALL_EMBED_URL`, `RECALL_EMBED_MODEL`, `RECALL_EMBED_BACKEND`, `RECALL_EMBED_KEY` | Meaning search backend for `recall.py` (see Recall). Defaults: Ollama at `http://localhost:11434`, model `bge-m3`. |
 | `HANDOFF_STATE_DIR` | Use another directory instead of `~/.local/state/claude-handoffs`. |
 | `HANDOFF_HOOK_CHILD` | Set by the hook for its own summary call so it never recurses. Do not set it yourself. |
 
@@ -154,7 +204,7 @@ Environment variables the hooks honour:
 
 **Can the nudge be skipped?** Yes. It reads the previous turn's token count, so one very large tool result can jump past the threshold without a nudge. The PreCompact hook still writes a handoff.
 
-**Does it send anything over the network?** The scripts do not. The two per-compaction calls run your local `claude -p`. See `SECURITY.md`.
+**Does it send anything over the network?** The scripts do not, except meaning search, which sends message text to the embedding server you configure (by default Ollama on your own machine). The two per-compaction calls run your local `claude -p`. See `SECURITY.md`.
 
 ## Troubleshooting
 

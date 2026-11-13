@@ -1,5 +1,21 @@
 # Changelog
 
+Lossless Handoff, formerly claude-handoff.
+
+## [0.6.0] - 2026-11-14
+
+Renamed to Lossless Handoff, based on the LCM paper (arXiv:2605.04050), plus recall (machine-setup F44, F44.9, F44.10, F44.11).
+
+- Renamed from claude-handoff to Lossless Handoff (repo `lossless-handoff`; GitHub redirects the old URL). Install paths, the state folder `~/.local/state/claude-handoffs` and hook command names are unchanged, so existing installs upgrade in place. README now credits the LCM paper by Clint Ehrlich and Theodore Blackman.
+- New `recall.py`: search, open, user, handoffs and index over the transcripts of all chats in the same project. Hybrid search merges word hits with optional meaning hits from a local embedding model (Ollama `bge-m3` by default; `RECALL_EMBED_URL`, `RECALL_EMBED_MODEL`, `RECALL_EMBED_BACKEND`, `RECALL_EMBED_KEY`). Words work without any setup. Secrets are redacted before output and before embedding.
+- Handoffs and new-chat context now carry one line telling the model that recall exists.
+- The meaning index is refreshed at each compaction by a detached background indexer that never delays or fails the hook.
+- `precompact-handoff.py` and `postcompact-inject.py` 1.7.0 copied from machine-setup. RESOLVED and SUPERSEDED lines keep their full original text (the 700-character cap no longer cuts `was:` and `| why:`).
+- `precompact-handoff.py --ledger-repair <dir>` restores cut RESOLVED/SUPERSEDED lines from the newest backup that still holds the full entry.
+- `--ledger-maintain` rejects a missing directory (exit 2) and creates nothing when there is no ledger.
+- An active ledger line without `| why:` is injected anyway and logged to `hooks-error.jsonl`, instead of being skipped.
+- `install.sh` installs `recall.py`, adds the allow rule `Bash(python3 ~/.claude/hooks/recall.py:*)` (idempotent) and prints the one-time index command; `uninstall.sh` removes `recall.py` and that rule. `tests/smoke.sh` covers recall.
+
 ## [0.5.0] - 2026-11-09
 
 Ledger kinds, lossless injection, later reminders (machine-setup F40.x, F41, F42, F43).

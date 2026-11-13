@@ -6,6 +6,7 @@ T="$(mktemp -d)"
 trap 'python3 -c "import shutil,sys; shutil.rmtree(sys.argv[1], ignore_errors=True)" "$T"' EXIT
 export HOME="$T/home"; mkdir -p "$HOME/.claude"
 export HANDOFF_HAIKU_FALLBACK=0
+export RECALL_EMBED_URL="http://127.0.0.1:9"   # closed port: recall and the detached indexer stay keyword-only
 unset CLAUDE_CODE_AUTO_COMPACT_WINDOW HANDOFF_STATE_DIR HANDOFF_HOOK_CHILD || true
 H="$HOME/.claude/hooks"; ST="$HOME/.local/state/claude-handoffs"; S="$HOME/.claude/settings.json"
 fail() { echo "FAIL: $*" >&2; exit 1; }
@@ -50,7 +51,12 @@ assert ss["startup"] == ["echo hello"] + led3 and ss["resume"] == led3, ss
 assert all(x["timeout"] == 10 for g in d["hooks"]["SessionStart"] for x in g["hooks"] if "inject" in x["command"])
 assert d["hooks"]["PostToolUse"][0]["hooks"][0]["timeout"] == 5
 assert "Edit(~/.local/state/claude-handoffs/**)" in d["permissions"]["allow"]
+assert d["permissions"]["allow"].count("Bash(python3 ~/.claude/hooks/recall.py:*)") == 1
+assert "Bash(ls:*)" in d["permissions"]["allow"]
 PY
+[ -f "$H/recall.py" ] || fail "recall.py not installed"
+grep -q "recall.py index" "$T/install1.out" || fail "install did not print the index command"
+grep -q "bge-m3" "$T/install1.out" || fail "install did not mention bge-m3"
 ok "settings content (compact, startup and resume ledger commands)"
 
 # PreCompact hook on a tiny transcript
@@ -310,14 +316,35 @@ rc=0; HOME="$T/home" "$ROOT/install.sh" >/dev/null 2>&1 || rc=$?
 [ "$rc" -eq 0 ] || fail "own re-install reported a conflict (exit $rc)"
 ok "re-install of own paths is not a conflict"
 
+# Recall: keyword search on a tiny fixture project (embedding server is a closed port)
+RP="$T/rproj"; mkdir -p "$RP" "$HOME/.claude/projects/rproj"
+python3 - "$HOME/.claude/projects/rproj/abcd1234-0000-0000-0000-000000000000.jsonl" "$RP" <<'PY'
+import json, sys
+cwd = sys.argv[2]
+rows = [
+ {"type": "user", "cwd": cwd, "timestamp": "2026-11-01T10:00:00Z", "message": {"role": "user", "content": "please use the flag --zebra-mode for the export job"}},
+ {"type": "assistant", "cwd": cwd, "timestamp": "2026-11-01T10:00:05Z", "message": {"role": "assistant", "content": [{"type": "text", "text": "Done, the export job now runs with --zebra-mode."}]}},
+]
+open(sys.argv[1], "w").write("\n".join(json.dumps(r) for r in rows) + "\n")
+PY
+o="$(cd "$RP" && python3 "$H/recall.py" search "zebra-mode" 2>&1)" || fail "recall search exited non-zero"
+echo "$o" | head -1 | grep -q "keyword only" || fail "recall: first line should say keyword only: $o"
+echo "$o" | grep -q "abcd1234:1 " && echo "$o" | grep -q "zebra-mode" || fail "recall: hit missing: $o"
+echo "$o" | grep -q "hits shown of 2" || fail "recall: count line wrong: $o"
+o="$(cd "$RP" && python3 "$H/recall.py" open abcd1234:1 2>&1)" && echo "$o" | grep -q "zebra-mode" || fail "recall open failed"
+o="$(cd "$RP" && python3 "$H/recall.py" user --last 5 2>&1)" && echo "$o" | grep -q "zebra-mode" || fail "recall user failed"
+o="$(cd "$RP" && python3 "$H/recall.py" index 2>&1)" || fail "recall index should exit 0 with the server down"
+echo "$o" | grep -q "meaning index skipped" || fail "recall index: expected skip message: $o"
+ok "recall: search, open, user and index (keyword only, server down)"
+
 "$ROOT/uninstall.sh" >"$T/un.out"
 python3 - "$S" "$T/original.json" <<'PY'
 import json, sys
 a = json.load(open(sys.argv[1], encoding="utf-8")); b = json.load(open(sys.argv[2], encoding="utf-8"))
 assert a == b, (a, b)
 PY
-for f in precompact-handoff.py postcompact-inject.py handoff-nudge.py; do [ ! -e "$H/$f" ] || fail "$f left behind"; done
+for f in precompact-handoff.py postcompact-inject.py handoff-nudge.py recall.py; do [ ! -e "$H/$f" ] || fail "$f left behind"; done
 [ -d "$ST" ] || fail "state dir should be kept"
 "$ROOT/uninstall.sh" >/dev/null
-ok "uninstall restores settings; second uninstall is a no-op"
+ok "uninstall removes recall.py and its allow rule, restores settings; second uninstall is a no-op"
 echo "ALL PASSED"

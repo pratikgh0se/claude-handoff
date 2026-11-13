@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# claude-handoff installer: copies three hooks and merges them into ~/.claude/settings.json.
+# Lossless Handoff installer (formerly claude-handoff): copies the hooks and merges them into ~/.claude/settings.json.
 set -euo pipefail
 
-VERSION="0.5.0"
+VERSION="0.6.0"
 usage() {
   cat <<EOF
-claude-handoff $VERSION
-Copies three hooks into ~/.claude/hooks and merges them into ~/.claude/settings.json.
+Lossless Handoff $VERSION (formerly claude-handoff)
+Copies the hooks (three handoff hooks plus the recall command) into ~/.claude/hooks and merges them into ~/.claude/settings.json.
 
 Usage: ./install.sh [--dry-run] [--force] [--window N] [--no-window] [--version] [-h|--help]
 
@@ -30,7 +30,7 @@ while [ $# -gt 0 ]; do
     --window) shift; WINDOW="${1:-}"; case "$WINDOW" in ''|*[!0-9]*) echo "--window needs a number" >&2; exit 2 ;; esac ;;
     --no-window) SETWINDOW=0 ;;
     --force) FORCE=1 ;;
-    --version) echo "claude-handoff $VERSION"; exit 0 ;;
+    --version) echo "Lossless Handoff $VERSION"; exit 0 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
@@ -44,7 +44,7 @@ SETTINGS="$HOME/.claude/settings.json"
 STATE_DIR="$HOME/.local/state/claude-handoffs"
 TS="$(date -u +%Y%m%dT%H%M%SZ)"
 BACKUP="$HOOKS_DIR/.claude-handoff-backup-$TS"
-FILES="precompact-handoff.py postcompact-inject.py handoff-nudge.py"
+FILES="precompact-handoff.py postcompact-inject.py handoff-nudge.py recall.py"
 
 say() { if [ "$DRY" = 1 ]; then echo "[dry-run] $*"; else echo "$*"; fi; }
 
@@ -62,6 +62,7 @@ post = ["python3 %s/postcompact-inject.py --part %d" % (hooks_dir, n) for n in (
 post_led = ["python3 %s/postcompact-inject.py --ledger --part %d" % (hooks_dir, n) for n in (1, 2, 3)]
 start_led = "python3 %s/postcompact-inject.py --ledger" % hooks_dir  # pre-0.5.0 startup/resume form, migrated away
 allow_rule = "Edit(~/.local/state/claude-handoffs/**)"
+recall_rule = "Bash(python3 ~/.claude/hooks/recall.py:*)"
 marker_path = os.path.join(hooks_dir, ".claude-handoff-install.json")
 tag = "[dry-run] " if dry else ""
 
@@ -99,7 +100,7 @@ for ev, groups_ in hooks.items():
             if isinstance(c, str) and any(n in c for n in names) and c not in own_cmds:
                 conflicts.append((ev, c))
 if conflicts and os.environ["HC_FORCE"] != "1":
-    sys.stderr.write("claude-handoff hooks are already registered from another path; installing would run every hook twice:\n")
+    sys.stderr.write("Lossless Handoff hooks are already registered from another path; installing would run every hook twice:\n")
     for ev, c in conflicts:
         sys.stderr.write("  %s: %s\n" % (ev, c))
     sys.stderr.write("Already installed from another path (not %s): remove those entries from %s, or rerun with --force.\n" % (hooks_dir, path))
@@ -180,6 +181,14 @@ else:
     allow_added = True
     changes.append("add permissions.allow %s" % allow_rule)
 
+recall_added = False
+if recall_rule in allow:
+    changes.append("permissions.allow already has %s" % recall_rule)
+else:
+    allow.append(recall_rule)
+    recall_added = True
+    changes.append("add permissions.allow %s" % recall_rule)
+
 window_set = None
 if os.environ["HC_SETWINDOW"] == "1":
     env = data.setdefault("env", {})
@@ -228,6 +237,9 @@ if window_set is not None:
     marker["window_set"] = window_set
 if allow_added:
     marker["allow_added"] = True
+if recall_added:
+    marker["recall_allow_added"] = True
+marker.setdefault("recall_allow_added", False)
 marker.setdefault("window_set", None)
 marker.setdefault("allow_added", False)
 os.makedirs(hooks_dir, exist_ok=True)
@@ -257,5 +269,11 @@ if [ -d "$STATE_DIR" ]; then say "state dir exists: $STATE_DIR"; else
 echo
 if [ "$DRY" = 1 ]; then echo "Dry run only: nothing was changed."; else
   echo "Installed. Restart Claude Code to load the hooks."
+  echo
+  echo "Recall (search of earlier chats in a project): build the first index once, from your project folder:"
+  echo "  python3 ~/.claude/hooks/recall.py index"
+  echo "Keyword search works without it. Meaning search is optional and needs Ollama with:  ollama pull bge-m3"
+  echo "(the index is then kept fresh automatically at each compaction)."
+  echo
   echo "Verify after the first compaction: tail -n 3 $STATE_DIR/health.jsonl"
 fi

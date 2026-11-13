@@ -8,7 +8,7 @@ labels: bug
 
 **Claude Code version** (`claude --version`), and CLI or desktop app:
 
-**claude-handoff version** (`./install.sh --version`):
+**Lossless Handoff version** (`./install.sh --version`):
 
 **Python version** (`python3 --version`):
 
