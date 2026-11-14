@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Lossless Handoff uninstaller (formerly claude-handoff): removes exactly what install.sh added.
 # Usage: ./uninstall.sh [--dry-run]
-# Handoff files and project ledgers in ~/.local/state/claude-handoffs are kept (delete that folder yourself if you want them gone).
+# Handoff files, recall indexes and project ledgers in ~/.local/state/claude-handoffs are kept (delete that folder yourself if you want them gone).
 set -euo pipefail
 
 DRY=0
@@ -33,6 +33,7 @@ ours |= {"python3 %s/postcompact-inject.py --part %d" % (hooks_dir, n) for n in 
 ours |= {"python3 %s/postcompact-inject.py --ledger --part %d" % (hooks_dir, n) for n in (1, 2, 3)}
 ours.add("python3 %s/postcompact-inject.py --ledger" % hooks_dir)
 ours.add("python3 %s/postcompact-inject.py" % hooks_dir)  # --part-less form
+sess_end = "python3 %s/recall.py session-end" % hooks_dir
 allow_rule = "Edit(~/.local/state/claude-handoffs/**)"
 recall_rule = "Bash(python3 ~/.claude/hooks/recall.py:*)"
 
@@ -55,6 +56,9 @@ if os.path.exists(marker_path):
         marker = {}
 before = json.dumps(data, sort_keys=True)
 removed = 0
+
+if marker.get("session_end_added"):
+    ours.add(sess_end)  # only when install added it; an entry the user had before stays
 
 hooks = data.get("hooks")
 if isinstance(hooks, dict):
@@ -116,6 +120,16 @@ elif not dry:
     print("settings: written %s" % path)
 PY
 
+LABEL="com.lossless-handoff.recall-index"
+PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
+if [ -e "$PLIST" ]; then
+  say "boot out and remove LaunchAgent $LABEL"
+  if [ "$DRY" = 0 ]; then
+    launchctl bootout "gui/$(id -u)/$LABEL" >/dev/null 2>&1 || true
+    rm "$PLIST"
+  fi
+fi
+
 for f in precompact-handoff.py postcompact-inject.py handoff-nudge.py recall.py .claude-handoff-install.json; do
   if [ -e "$HOOKS_DIR/$f" ]; then
     say "remove $HOOKS_DIR/$f"
@@ -124,6 +138,7 @@ for f in precompact-handoff.py postcompact-inject.py handoff-nudge.py recall.py 
 done
 
 echo "kept $STATE_DIR (handoffs and health.jsonl); delete it yourself if you do not want them"
+echo "kept the recall indexes and logs under $STATE_DIR/recall/ (delete that folder yourself to drop them)"
 echo "kept the project decision ledgers under $STATE_DIR/projects/ (delete that folder yourself to forget them)"
 for b in "$HOOKS_DIR"/.claude-handoff-backup-*; do [ -e "$b" ] && echo "kept backup: $b"; done
 echo "Done. Restart Claude Code."

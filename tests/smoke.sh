@@ -7,6 +7,10 @@ trap 'python3 -c "import shutil,sys; shutil.rmtree(sys.argv[1], ignore_errors=Tr
 export HOME="$T/home"; mkdir -p "$HOME/.claude"
 export HANDOFF_HAIKU_FALLBACK=0
 export RECALL_EMBED_URL="http://127.0.0.1:9"   # closed port: recall and the detached indexer stay keyword-only
+# no ollama on PATH: drop any PATH entry that holds one, so the install never pulls a model
+NP=""; IFS=: read -ra _pd <<<"$PATH"
+for d in "${_pd[@]}"; do [ -x "$d/ollama" ] || NP="${NP:+$NP:}$d"; done
+export PATH="$NP"
 unset CLAUDE_CODE_AUTO_COMPACT_WINDOW HANDOFF_STATE_DIR HANDOFF_HOOK_CHILD || true
 H="$HOME/.claude/hooks"; ST="$HOME/.local/state/claude-handoffs"; S="$HOME/.claude/settings.json"
 fail() { echo "FAIL: $*" >&2; exit 1; }
@@ -24,13 +28,13 @@ cat > "$S" <<'JSON'
 JSON
 cp "$S" "$T/original.json"
 
-"$ROOT/install.sh" --dry-run >/dev/null
+"$ROOT/install.sh" --no-nightly --dry-run >/dev/null
 cmp -s "$S" "$T/original.json" || fail "dry-run changed settings"
 ok "dry-run changes nothing"
 
-"$ROOT/install.sh" >"$T/install1.out"
+"$ROOT/install.sh" --no-nightly >"$T/install1.out"
 cp "$S" "$T/after1.json"
-"$ROOT/install.sh" >"$T/install2.out"
+"$ROOT/install.sh" --no-nightly >"$T/install2.out"
 cmp -s "$S" "$T/after1.json" || fail "second install changed settings"
 ls "$S".bak-* >/dev/null 2>&1 || fail "no settings backup"
 ok "install is idempotent"
@@ -55,8 +59,35 @@ assert d["permissions"]["allow"].count("Bash(python3 ~/.claude/hooks/recall.py:*
 assert "Bash(ls:*)" in d["permissions"]["allow"]
 PY
 [ -f "$H/recall.py" ] || fail "recall.py not installed"
-grep -q "recall.py index" "$T/install1.out" || fail "install did not print the index command"
-grep -q "bge-m3" "$T/install1.out" || fail "install did not mention bge-m3"
+grep -q "building in the background" "$T/install1.out" || fail "install did not say the first index is building"
+grep -q "https://ollama.com/download" "$T/install1.out" || fail "install did not print the Ollama hint"
+grep -q "ollama.com/download" "$T/install1.out" && grep -q "skipped (--no-nightly)" "$T/install1.out" || fail "install did not report skipping the nightly job"
+python3 - "$S" "$H" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1], encoding="utf-8")); h = sys.argv[2]
+se = d["hooks"]["SessionEnd"]
+assert [(x["command"], x["timeout"]) for g in se for x in g["hooks"]] == [("python3 %s/recall.py session-end" % h, 5)], se
+m = json.load(open(h + "/.claude-handoff-install.json"))
+assert m["session_end_added"] is True, m
+PY
+[ ! -e "$HOME/Library/LaunchAgents/com.lossless-handoff.recall-index.plist" ] || fail "--no-nightly still wrote a LaunchAgent"
+for _ in 1 2 3 4 5 6 7 8 9 10; do [ -e "$ST/recall/index-all.log" ] && break; sleep 1; done
+[ -e "$ST/recall/index-all.log" ] || fail "first index did not start (no index-all.log)"
+ok "SessionEnd hook registered and recorded, ollama hint, no nightly job, first index started"
+# SessionEnd hook: empty input, silent, exit 0
+o="$(printf '{}' | python3 "$H/recall.py" session-end 2>&1)" || fail "session-end exited non-zero"
+[ -z "$o" ] || fail "session-end printed output: $o"
+o="$(python3 "$H/recall.py" index --all 2>&1)" || fail "index --all exited non-zero"
+echo "$o" | grep -q "indexed" || fail "index --all: expected 'indexed': $o"
+ok "recall.py session-end is silent with {}, index --all exits 0"
+# --yes with a fake ollama pulls bge-m3
+mkdir -p "$T/fakebin"; printf '#!/bin/sh\necho "$@" >> "%s/ollama.calls"\n' "$T" > "$T/fakebin/ollama"; chmod +x "$T/fakebin/ollama"
+PATH="$T/fakebin:$PATH" "$ROOT/install.sh" --no-nightly --yes >/dev/null
+grep -qx "pull bge-m3" "$T/ollama.calls" || fail "--yes did not run ollama pull bge-m3"
+PATH="$T/fakebin:$PATH" "$ROOT/install.sh" --no-nightly >"$T/nontty.out" </dev/null
+[ "$(wc -l < "$T/ollama.calls")" -eq 1 ] || fail "non-interactive run without --yes pulled the model"
+grep -q "ollama pull bge-m3" "$T/nontty.out" || fail "non-interactive run did not print the pull hint"
+ok "ollama: --yes pulls bge-m3, non-interactive skips with a hint"
 ok "settings content (compact, startup and resume ledger commands)"
 
 # PreCompact hook on a tiny transcript
@@ -301,18 +332,18 @@ cat > "$H2/.claude/settings.json" <<'JSON'
 {"hooks": {"PreCompact": [{"hooks": [{"type": "command", "command": "python3 /other/place/precompact-handoff.py"}]}]}}
 JSON
 cp "$H2/.claude/settings.json" "$T/conflict-orig.json"
-rc=0; HOME="$H2" "$ROOT/install.sh" >"$T/c.out" 2>"$T/c.err" || rc=$?
+rc=0; HOME="$H2" "$ROOT/install.sh" --no-nightly >"$T/c.out" 2>"$T/c.err" || rc=$?
 [ "$rc" -eq 2 ] || fail "conflict: expected exit 2, got $rc"
 grep -q "/other/place/precompact-handoff.py" "$T/c.err" || fail "conflict: command not printed"
 grep -q -- "--force" "$T/c.err" || fail "conflict: message lacks --force"
 cmp -s "$H2/.claude/settings.json" "$T/conflict-orig.json" || fail "conflict: settings changed"
 [ ! -e "$H2/.claude/hooks/handoff-nudge.py" ] || fail "conflict: hook files copied"
 ok "conflicting registration: exit 2, nothing changed"
-HOME="$H2" "$ROOT/install.sh" --force >/dev/null || fail "--force install failed"
+HOME="$H2" "$ROOT/install.sh" --no-nightly --force >/dev/null || fail "--force install failed"
 [ -f "$H2/.claude/hooks/handoff-nudge.py" ] || fail "--force did not install"
 python3 -c "import json,sys; d=json.load(open(sys.argv[1])); assert len(d['hooks']['PreCompact'])==2" "$H2/.claude/settings.json" || fail "--force settings wrong"
 ok "--force installs alongside the other registration"
-rc=0; HOME="$T/home" "$ROOT/install.sh" >/dev/null 2>&1 || rc=$?
+rc=0; HOME="$T/home" "$ROOT/install.sh" --no-nightly >/dev/null 2>&1 || rc=$?
 [ "$rc" -eq 0 ] || fail "own re-install reported a conflict (exit $rc)"
 ok "re-install of own paths is not a conflict"
 
@@ -358,6 +389,7 @@ import json, sys
 a = json.load(open(sys.argv[1], encoding="utf-8")); b = json.load(open(sys.argv[2], encoding="utf-8"))
 assert a == b, (a, b)
 PY
+python3 -c "import json,sys; assert 'SessionEnd' not in json.load(open(sys.argv[1])).get('hooks', {})" "$S" || fail "SessionEnd hook left behind"
 for f in precompact-handoff.py postcompact-inject.py handoff-nudge.py recall.py; do [ ! -e "$H/$f" ] || fail "$f left behind"; done
 [ -d "$ST" ] || fail "state dir should be kept"
 "$ROOT/uninstall.sh" >/dev/null

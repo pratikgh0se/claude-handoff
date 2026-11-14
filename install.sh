@@ -2,34 +2,41 @@
 # Lossless Handoff installer (formerly claude-handoff): copies the hooks and merges them into ~/.claude/settings.json.
 set -euo pipefail
 
-VERSION="0.6.1"
+VERSION="0.7.0"
 usage() {
   cat <<EOF
 Lossless Handoff $VERSION (formerly claude-handoff)
 Copies the hooks (three handoff hooks plus the recall command) into ~/.claude/hooks and merges them into ~/.claude/settings.json.
+Also sets up automatic recall indexing: an end-of-chat hook, an optional bge-m3 model pull, a nightly job (macOS) and a first index.
 
-Usage: ./install.sh [--dry-run] [--force] [--window N] [--no-window] [--version] [-h|--help]
+Usage: ./install.sh [--dry-run] [--force] [--window N] [--no-window] [--yes] [--no-nightly] [--version] [-h|--help]
 
   --dry-run     show what would change, change nothing
   --window N    set CLAUDE_CODE_AUTO_COMPACT_WINDOW to N tokens (default 400000;
                 left alone if already set)
   --no-window   do not touch CLAUDE_CODE_AUTO_COMPACT_WINDOW
+  --yes         answer yes to the bge-m3 model pull (needs ollama on PATH). Without
+                it, an interactive run asks y/N and a non-interactive run skips it
+  --no-nightly  do not install the nightly index job (macOS LaunchAgent)
   --force       install even if the same hooks are already registered from another
                 path (they would then run twice); default is to stop with exit 2
   --version     print the version and exit
   -h, --help    show this help
 
-Requires bash and python3 (macOS or Linux).
+Requires bash and python3 (macOS or Linux). Ollama is optional: without it, keyword
+search still works (https://ollama.com/download). Ollama itself is never installed.
 EOF
 }
 
-DRY=0; FORCE=0; WINDOW=400000; SETWINDOW=1
+DRY=0; FORCE=0; WINDOW=400000; SETWINDOW=1; YES=0; NONIGHTLY=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run) DRY=1 ;;
     --window) shift; WINDOW="${1:-}"; case "$WINDOW" in ''|*[!0-9]*) echo "--window needs a number" >&2; exit 2 ;; esac ;;
     --no-window) SETWINDOW=0 ;;
     --force) FORCE=1 ;;
+    --yes|-y) YES=1 ;;
+    --no-nightly) NONIGHTLY=1 ;;
     --version) echo "Lossless Handoff $VERSION"; exit 0 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
@@ -44,6 +51,9 @@ SETTINGS="$HOME/.claude/settings.json"
 STATE_DIR="$HOME/.local/state/claude-handoffs"
 TS="$(date -u +%Y%m%dT%H%M%SZ)"
 BACKUP="$HOOKS_DIR/.claude-handoff-backup-$TS"
+LABEL="com.lossless-handoff.recall-index"
+PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
+RLOG_DIR="$STATE_DIR/recall"
 FILES="precompact-handoff.py postcompact-inject.py handoff-nudge.py recall.py"
 
 say() { if [ "$DRY" = 1 ]; then echo "[dry-run] $*"; else echo "$*"; fi; }
@@ -61,6 +71,7 @@ nudge = "python3 %s/handoff-nudge.py" % hooks_dir
 post = ["python3 %s/postcompact-inject.py --part %d" % (hooks_dir, n) for n in (1, 2, 3)]
 post_led = ["python3 %s/postcompact-inject.py --ledger --part %d" % (hooks_dir, n) for n in (1, 2, 3)]
 start_led = "python3 %s/postcompact-inject.py --ledger" % hooks_dir  # pre-0.5.0 startup/resume form, migrated away
+sess_end = "python3 %s/recall.py session-end" % hooks_dir
 allow_rule = "Edit(~/.local/state/claude-handoffs/**)"
 recall_rule = "Bash(python3 ~/.claude/hooks/recall.py:*)"
 marker_path = os.path.join(hooks_dir, ".claude-handoff-install.json")
@@ -168,6 +179,15 @@ for matcher in ("startup", "resume"):
             g2["hooks"].append({"type": "command", "command": cmd, "timeout": 10})
             changes.append("add SessionStart %s --ledger --part %d (timeout 10)" % (matcher, n))
 
+groups = hooks.setdefault("SessionEnd", [])
+session_end_added = False
+if has_cmd(groups, sess_end):
+    changes.append("SessionEnd recall hook already present")
+else:
+    groups.append({"hooks": [{"type": "command", "command": sess_end, "timeout": 5}]})
+    session_end_added = True
+    changes.append("add SessionEnd recall hook (timeout 5)")
+
 # permission so the model can write its handoff without a prompt
 perms = data.setdefault("permissions", {})
 if not isinstance(perms, dict):
@@ -239,6 +259,9 @@ if allow_added:
     marker["allow_added"] = True
 if recall_added:
     marker["recall_allow_added"] = True
+if session_end_added:
+    marker["session_end_added"] = True
+marker.setdefault("session_end_added", False)
 marker.setdefault("recall_allow_added", False)
 marker.setdefault("window_set", None)
 marker.setdefault("allow_added", False)
@@ -266,14 +289,97 @@ done
 if [ -d "$STATE_DIR" ]; then say "state dir exists: $STATE_DIR"; else
   say "create state dir: $STATE_DIR"; [ "$DRY" = 1 ] || mkdir -p "$STATE_DIR"; fi
 
+# 3. semantic search model (optional)
+echo
+if command -v ollama >/dev/null 2>&1; then
+  PULL=0
+  if [ "$YES" = 1 ]; then PULL=1
+  elif [ "$DRY" = 1 ]; then say "would ask whether to run: ollama pull bge-m3"
+  elif [ -t 0 ] && [ -t 1 ]; then
+    printf "Pull the bge-m3 model for search by meaning (about 1.2 GB)? [y/N] "
+    read -r ans || ans=""
+    case "$ans" in y|Y|yes|YES) PULL=1 ;; esac
+  else
+    echo "Meaning search: skipped the model pull (not interactive). Run: ollama pull bge-m3   (or rerun install with --yes)"
+  fi
+  if [ "$PULL" = 1 ]; then
+    if [ "$DRY" = 1 ]; then say "run: ollama pull bge-m3"
+    else ollama pull bge-m3 || echo "warning: ollama pull bge-m3 failed; keyword search still works, retry later" >&2; fi
+  fi
+else
+  echo "Meaning search is optional. To enable it, install Ollama (https://ollama.com/download), then run: ollama pull bge-m3"
+  echo "Keyword search works without it."
+fi
+
+# 4. nightly index job
+INDEX_CMD="python3 $HOOKS_DIR/recall.py index --all --max-seconds 3000"
+if [ "$NONIGHTLY" = 1 ]; then
+  say "nightly index job: skipped (--no-nightly)"
+elif [ "$(uname)" = "Darwin" ]; then
+  say "install LaunchAgent $LABEL (daily 03:30): $PLIST"
+  if [ "$DRY" = 0 ]; then
+    mkdir -p "$HOME/Library/LaunchAgents" "$RLOG_DIR"
+    cat > "$PLIST" <<PLISTEOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>$LABEL</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/env</string>
+    <string>python3</string>
+    <string>$HOOKS_DIR/recall.py</string>
+    <string>index</string>
+    <string>--all</string>
+    <string>--max-seconds</string>
+    <string>3000</string>
+  </array>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>3</integer>
+    <key>Minute</key>
+    <integer>30</integer>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>$RLOG_DIR/index-all.log</string>
+  <key>StandardErrorPath</key>
+  <string>$RLOG_DIR/index-all.log</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>$HOME</string>
+    <key>PATH</key>
+    <string>$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+</dict>
+</plist>
+PLISTEOF
+    launchctl bootout "gui/$(id -u)/$LABEL" >/dev/null 2>&1 || true
+    launchctl bootstrap "gui/$(id -u)" "$PLIST" \
+      || echo "warning: could not load the LaunchAgent; run: launchctl bootstrap gui/$(id -u) $PLIST" >&2
+  fi
+else
+  echo "Nightly index job: add this line with 'crontab -e' (not edited for you):"
+  echo "  30 3 * * * $INDEX_CMD >> $RLOG_DIR/index-all.log 2>&1"
+fi
+
+# 5. first index, detached
+if [ "$DRY" = 1 ]; then
+  say "start in the background: $INDEX_CMD (log: $RLOG_DIR/index-all.log)"
+else
+  mkdir -p "$RLOG_DIR"
+  nohup python3 "$HOOKS_DIR/recall.py" index --all >> "$RLOG_DIR/index-all.log" 2>&1 < /dev/null &
+fi
+
 echo
 if [ "$DRY" = 1 ]; then echo "Dry run only: nothing was changed."; else
   echo "Installed. Restart Claude Code to load the hooks."
   echo
-  echo "Recall (search of earlier chats in a project): build the first index once, from your project folder:"
-  echo "  python3 ~/.claude/hooks/recall.py index"
-  echo "Keyword search works without it. Meaning search is optional and needs Ollama with:  ollama pull bge-m3"
-  echo "(the index is then kept fresh automatically at each compaction)."
+  echo "Recall: the first index of your earlier chats is building in the background (log: $RLOG_DIR/index-all.log)."
+  echo "Chats are indexed automatically when they end. Search from a project folder:  python3 ~/.claude/hooks/recall.py search \"words\""
   echo
   echo "Verify after the first compaction: tail -n 3 $STATE_DIR/health.jsonl"
 fi

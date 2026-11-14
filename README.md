@@ -15,7 +15,7 @@
 git clone https://github.com/pratikgh0se/lossless-handoff.git && cd lossless-handoff && ./install.sh
 ```
 
-Optional, for search by meaning: `ollama pull bge-m3`, then `python3 ~/.claude/hooks/recall.py index` once per project.
+The installer also sets up recall indexing for you (see Recall below). Search by meaning is optional and needs [Ollama](https://ollama.com/download); keyword search works without it.
 
 ## Quick start
 
@@ -116,7 +116,8 @@ python3 ~/.claude/hooks/recall.py open abcd1234:57 --full      # the whole messa
 python3 ~/.claude/hooks/recall.py open abcd1234:57 --full --from 40000   # next page of a longer message
 python3 ~/.claude/hooks/recall.py user --last 20               # your own typed messages, newest first
 python3 ~/.claude/hooks/recall.py handoffs                     # this project's handoff files
-python3 ~/.claude/hooks/recall.py index                        # build or refresh the meaning index
+python3 ~/.claude/hooks/recall.py index                        # build or refresh the index for this project
+python3 ~/.claude/hooks/recall.py index --all                  # every project that has a git repo
 ```
 
 Every command accepts `--cwd DIR` (default: the current folder). `search` also takes `--session SID8|all`, `--limit N` and `--subagents`. Output is capped at 12,000 characters, and obvious secrets (API keys, tokens, `password=...`) are replaced by `[redacted]` before printing or embedding.
@@ -125,7 +126,8 @@ Every command accepts `--cwd DIR` (default: the current folder). `search` also t
 - **Recall does not outrank the decisions list.** If recall and the decisions list disagree, or recall disagrees with your latest words, the decisions list and your latest words win. Recall can surface an older statement.
 - **Default is hybrid.** Word hits and meaning hits are merged; each line is tagged `[word]`, `[meaning]` or `[both]`, and the first line says which mode ran. `--keyword` is words only, `--meaning` is the embedding index only.
 - **Words work without any setup.** It uses `rg` if installed, else plain Python.
-- **Meaning search is optional.** It needs a local embedding model: [Ollama](https://ollama.com) with `ollama pull bge-m3`. Build the first index once with `python3 ~/.claude/hooks/recall.py index` from your project folder. After that, each compaction refreshes it in a detached background process that never delays compaction. If the model is not reachable, search says `keyword only` and carries on.
+- **Indexing is automatic.** The installer registers a `SessionEnd` hook that starts a background index of the project when a chat ends, and builds a first index of all your projects right after install. On macOS it also installs a nightly job (03:30) that refreshes every project; on Linux it prints the crontab line for you to add. Each compaction also refreshes the index in the background. None of this delays Claude Code.
+- **Meaning search is optional.** It needs a local embedding model: [Ollama](https://ollama.com/download) with `ollama pull bge-m3`. If `ollama` is on your PATH, the installer offers to pull the model (`--yes` says yes; a non-interactive run skips it and prints the command). If Ollama is not installed, the installer prints a one-line hint and carries on. Without the model, search says `keyword only` and still finds exact words, commands and paths. The installer never installs Ollama itself.
 - **Environment variables.** `RECALL_EMBED_URL` (default `http://localhost:11434`), `RECALL_EMBED_MODEL` (default `bge-m3`), `RECALL_EMBED_BACKEND` (`ollama`, or `openai` for any `/v1/embeddings` server), `RECALL_EMBED_KEY` (optional Bearer token for the `openai` backend).
 
 ## What to expect
@@ -161,13 +163,16 @@ One-liner:
 git clone https://github.com/pratikgh0se/lossless-handoff.git && cd lossless-handoff && ./install.sh
 ```
 
-Options: `--window N`, `--no-window`, `--dry-run`, `--force`, `--version`, `--help`. If the same hook scripts are already registered in `settings.json` from another path (for example `~/.claude/hooks/` from another setup), install prints those commands and exits 2, because every hook would run twice (duplicate health lines, double injection, two fresh-summary calls). Remove those entries, or pass `--force` to install anyway. Install is idempotent and fails with a clear message if `python3` is missing or `settings.json` is not valid JSON.
+Options: `--window N`, `--no-window`, `--yes` (pull the bge-m3 model without asking), `--no-nightly` (skip the nightly index job), `--dry-run`, `--force`, `--version`, `--help`. If the same hook scripts are already registered in `settings.json` from another path (for example `~/.claude/hooks/` from another setup), install prints those commands and exits 2, because every hook would run twice (duplicate health lines, double injection, two fresh-summary calls). Remove those entries, or pass `--force` to install anyway. Install is idempotent and fails with a clear message if `python3` is missing or `settings.json` is not valid JSON.
 
 It changes:
 
 - copies `precompact-handoff.py`, `postcompact-inject.py`, `handoff-nudge.py` and `recall.py` to `~/.claude/hooks/` (an existing file with a different content is first saved to `~/.claude/hooks/.claude-handoff-backup-<timestamp>/`);
-- merges into `~/.claude/settings.json` (backup `settings.json.bak-<timestamp>`): a PreCompact hook (timeout 150), a PostToolUse hook (matcher `*`, timeout 5), a SessionStart `compact` group with the three inject commands and the three `--ledger --part 1/2/3` commands (timeout 10), SessionStart `startup` and `resume` groups with the three `--ledger --part 1/2/3` commands (timeout 10; an older single `--ledger` entry is replaced), `permissions.allow` entry `Edit(~/.local/state/claude-handoffs/**)` so the model can write its handoff without a prompt, `permissions.allow` entry `Bash(python3 ~/.claude/hooks/recall.py:*)` so the model can run recall without a prompt, and `env.CLAUDE_CODE_AUTO_COMPACT_WINDOW` = `"400000"` unless already set;
-- creates `~/.local/state/claude-handoffs/`.
+- merges into `~/.claude/settings.json` (backup `settings.json.bak-<timestamp>`): a PreCompact hook (timeout 150), a PostToolUse hook (matcher `*`, timeout 5), a SessionStart `compact` group with the three inject commands and the three `--ledger --part 1/2/3` commands (timeout 10), SessionStart `startup` and `resume` groups with the three `--ledger --part 1/2/3` commands (timeout 10; an older single `--ledger` entry is replaced), `permissions.allow` entry `Edit(~/.local/state/claude-handoffs/**)` so the model can write its handoff without a prompt, `permissions.allow` entry `Bash(python3 ~/.claude/hooks/recall.py:*)` so the model can run recall without a prompt, a `SessionEnd` hook running `recall.py session-end` (timeout 5, recorded so uninstall removes only what install added), and `env.CLAUDE_CODE_AUTO_COMPACT_WINDOW` = `"400000"` unless already set;
+- creates `~/.local/state/claude-handoffs/`;
+- optionally runs `ollama pull bge-m3` (see above);
+- on macOS, unless `--no-nightly`: writes the LaunchAgent `~/Library/LaunchAgents/com.lossless-handoff.recall-index.plist` (daily 03:30, runs `recall.py index --all --max-seconds 3000`, log `~/.local/state/claude-handoffs/recall/index-all.log`) and loads it with `launchctl bootstrap`, replacing any earlier copy. On Linux it prints the equivalent crontab line and does not edit your crontab;
+- starts `recall.py index --all` in the background and tells you it is building (same log).
 
 Your other hooks and settings are left alone: new entries are appended next to existing ones. Restart Claude Code afterwards.
 

@@ -2,6 +2,20 @@
 
 Lossless Handoff, formerly claude-handoff.
 
+## [0.7.0] - 2026-11-14
+
+Automatic recall indexing (machine-setup F44.13, hooks 1.8.0).
+
+- `recall.py index --all` indexes every Claude Code project that sits in a git repo, newest first, with a time cap (`--max-seconds`), one summary line per project.
+- `recall.py session-end` is a new `SessionEnd` hook: when a chat ends it starts a detached index of that project and prints nothing; it always exits 0.
+- `install.sh` registers the `SessionEnd` hook (timeout 5) and records it so `uninstall.sh` removes only what was added.
+- `install.sh` offers `ollama pull bge-m3` when `ollama` is on PATH (asks y/N interactively, `--yes` says yes, a non-interactive run skips with a hint). Without Ollama it prints the download link and continues; keyword search still works. Ollama is never installed for you.
+- `install.sh` installs a macOS LaunchAgent `com.lossless-handoff.recall-index` (daily 03:30, `index --all`); `--no-nightly` skips it. On Linux it prints the crontab line.
+- `install.sh` starts the first `index --all` in the background after install. New flags: `--yes`, `--no-nightly`.
+- `uninstall.sh` removes the `SessionEnd` entry (if install added it) and boots out and deletes the LaunchAgent. Indexes, logs and state are kept.
+- `precompact-handoff.py`, `postcompact-inject.py` and `recall.py` 1.8.0 copied from machine-setup.
+- `tests/smoke.sh` covers the SessionEnd hook, `index --all`, the `--yes` and non-interactive model-pull paths, and uninstall.
+
 ## [0.6.1] - 2026-11-14
 
 Long messages in full, a cold-model timeout fix, and measured results (machine-setup F44.12).
